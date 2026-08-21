@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from '@mariozechner/pi-coding-agent';
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionFactory,
+} from '@mariozechner/pi-coding-agent';
 
 import { AtelierSidebar, buildAtelierSidebarRows } from './atelier-sidebar.js';
 import type { ParsedPrompt } from './types.js';
