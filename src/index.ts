@@ -2,16 +2,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { discoverAndLoadExtensions, SettingsManager } from '@mariozechner/pi-coding-agent';
-import type { ExtensionFactory } from '@mariozechner/pi-coding-agent';
+import type { ExtensionContext, ExtensionFactory } from '@mariozechner/pi-coding-agent';
 
+import { AtelierSidebar, buildAtelierSidebarRows } from './atelier-sidebar.js';
 import { attributeBasePrompt, extractBaseLines, extractContributions } from './base-trace/index.js';
 import type { BasePromptTraceResult } from './base-trace/index.js';
-import {
-  buildToolDefinitionsSection,
-  estimateTokens,
-  parseSystemPrompt,
-  toolEnvelopeForModel,
-} from './parser.js';
+import { measureTokenBudget } from './measureTokenBudget.js';
+import { estimateTokens } from './parser.js';
 import { showReport } from './report-view.js';
 import { saveSkillToggleResult } from './saveSkillToggleResult.js';
 import { SkillVisibilityStore, loadSettings } from './skill-visibility-store.js';
@@ -38,29 +35,71 @@ function getAgentDir(): string {
 }
 
 const EXTENSION: ExtensionFactory = (pi) => {
+  let atelierDiscovered = false;
+  let sessionContext: ExtensionContext | undefined;
+  let latestPrompt: string | undefined;
+
+  const measureForContext = (ctx: ExtensionContext, prompt: string) => {
+    const rawModel: unknown = ctx.model;
+    const model = isRecord(rawModel) ? rawModel : {};
+    return measureTokenBudget({
+      prompt,
+      allTools: pi.getAllTools(),
+      activeToolNames: pi.getActiveTools(),
+      modelApi: typeof model.api === 'string' ? model.api : undefined,
+      modelProvider: typeof model.provider === 'string' ? model.provider : undefined,
+    });
+  };
+
+  const publishSidebar = (ctx: ExtensionContext, prompt: string): void => {
+    const parsed = measureForContext(ctx, prompt);
+    const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow;
+
+    sidebar.update(buildAtelierSidebarRows({ parsed, contextWindow }));
+  };
+
+  const sidebar = new AtelierSidebar(pi.events, {
+    onDiscover: () => {
+      atelierDiscovered = true;
+      if (sessionContext) {
+        const prompt = latestPrompt ?? sessionContext.getSystemPrompt();
+        latestPrompt = prompt;
+        publishSidebar(sessionContext, prompt);
+      }
+    },
+  });
+
+  pi.on('session_start', (_event, ctx) => {
+    sessionContext = ctx;
+    latestPrompt = undefined;
+    if (atelierDiscovered) {
+      const prompt = ctx.getSystemPrompt();
+      latestPrompt = prompt;
+      publishSidebar(ctx, prompt);
+    }
+  });
+
+  pi.on('before_agent_start', (event, ctx) => {
+    sessionContext = ctx;
+    latestPrompt = event.systemPrompt;
+    if (atelierDiscovered) {
+      publishSidebar(ctx, event.systemPrompt);
+    }
+  });
+
+  pi.on('model_select', (_event, ctx) => {
+    sessionContext = ctx;
+    if (atelierDiscovered) {
+      const prompt = latestPrompt ?? ctx.getSystemPrompt();
+      latestPrompt = prompt;
+      publishSidebar(ctx, prompt);
+    }
+  });
+
   pi.registerCommand('token-burden', {
     description: 'Show token budget breakdown and manage skills',
-    handler: async (args, ctx) => {
-      const prompt = ctx.getSystemPrompt();
-      const parsed = parseSystemPrompt(prompt);
-
-      // Add tool definitions section (function schemas sent via tool-calling API)
-      const allTools = pi.getAllTools();
-      const activeTools = pi.getActiveTools();
-      const rawModel: unknown = ctx.model;
-      const model = isRecord(rawModel) ? rawModel : {};
-      const modelApi = typeof model.api === 'string' ? model.api : undefined;
-      const modelProvider = typeof model.provider === 'string' ? model.provider : undefined;
-      const toolSection = buildToolDefinitionsSection(
-        allTools,
-        activeTools,
-        toolEnvelopeForModel(modelApi, modelProvider),
-      );
-      if (toolSection) {
-        parsed.sections.push(toolSection);
-        parsed.totalTokens += toolSection.tokens;
-        parsed.totalChars += toolSection.chars;
-      }
+    handler: async (_args, ctx) => {
+      const parsed = measureForContext(ctx, ctx.getSystemPrompt());
 
       const usage = ctx.getContextUsage();
       const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
