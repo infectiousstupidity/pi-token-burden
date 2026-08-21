@@ -60,8 +60,19 @@ export function formatCompactTokens(tokens: number): string {
     return String(tokens);
   }
 
-  const scaled = tokens / scale.divisor;
-  const rounded = Math.abs(scaled) < 100 ? Math.round(scaled * 10) / 10 : Math.round(scaled);
+  const roundScaled = (value: number): number => {
+    const magnitude = Math.abs(value);
+    const roundedMagnitude =
+      magnitude < 100 ? Math.round(magnitude * 10) / 10 : Math.round(magnitude);
+    return Math.sign(value) * roundedMagnitude;
+  };
+  const rounded = roundScaled(tokens / scale.divisor);
+  const largerScale = scales.find(({ minimum }) => minimum === scale.minimum * 1_000);
+
+  if (Math.abs(rounded) >= 1_000 && largerScale) {
+    return `${String(roundScaled(tokens / largerScale.divisor))}${largerScale.suffix}`;
+  }
+
   return `${String(rounded)}${scale.suffix}`;
 }
 

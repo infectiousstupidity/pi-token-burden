@@ -55,6 +55,23 @@ describe('Atelier sidebar row formatting', () => {
     expect(formatCompactTokens(tokens)).toBe(formatted);
   });
 
+  it.each([
+    [999_499, '999k'],
+    [999_500, '1m'],
+    [999_999, '1m'],
+    [999_499_999, '999m'],
+    [999_500_000, '1b'],
+    [999_999_999, '1b'],
+    [-999_499, '-999k'],
+    [-999_500, '-1m'],
+    [-999_999, '-1m'],
+    [-999_499_999, '-999m'],
+    [-999_500_000, '-1b'],
+    [-999_999_999, '-1b'],
+  ])('rolls %i tokens over at the rounded unit boundary as %s', (tokens, formatted) => {
+    expect(formatCompactTokens(tokens)).toBe(formatted);
+  });
+
   it('shows context-window usage when the window is known and positive', () => {
     const rows = buildAtelierSidebarRows({
       parsed: {
