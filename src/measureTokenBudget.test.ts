@@ -10,11 +10,12 @@ interface ToolDefinition {
 }
 
 interface ParserModule {
-  parseSystemPrompt(prompt: string): ParsedPrompt;
+  parseSystemPrompt(prompt: string, options?: { details?: boolean }): ParsedPrompt;
   buildToolDefinitionsSection(
     tools: ToolDefinition[],
     activeToolNames?: string[],
     countedEnvelope?: string,
+    options?: { details?: boolean },
   ): PromptSection | null;
   toolEnvelopeForModel(api?: string, provider?: string): string;
 }
@@ -73,6 +74,36 @@ describe('Token Budget Pipeline measurement', () => {
       totalTokens: 32,
       skills: [],
     });
+  });
+
+  it('uses summary parsing when details are disabled', async () => {
+    const parsed = {
+      sections: [],
+      totalChars: 6,
+      totalTokens: 2,
+      skills: [],
+    };
+    PARSE_SYSTEM_PROMPT_MOCK.mockReturnValue(parsed);
+    TOOL_ENVELOPE_FOR_MODEL_MOCK.mockReturnValue('anthropic');
+    BUILD_TOOL_DEFINITIONS_SECTION_MOCK.mockReturnValue(null);
+
+    const { measureTokenBudget } = await import('./measureTokenBudget.js');
+    measureTokenBudget({
+      prompt: 'prompt',
+      allTools: tools,
+      activeToolNames: ['read'],
+      modelApi: 'anthropic-messages',
+      modelProvider: 'openrouter',
+      details: false,
+    });
+
+    expect(PARSE_SYSTEM_PROMPT_MOCK).toHaveBeenLastCalledWith('prompt', { details: false });
+    expect(BUILD_TOOL_DEFINITIONS_SECTION_MOCK).toHaveBeenLastCalledWith(
+      tools,
+      ['read'],
+      'anthropic',
+      { details: false },
+    );
   });
 
   it('leaves prompt totals unchanged when there is no tool section', async () => {
