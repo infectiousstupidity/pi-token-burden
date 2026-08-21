@@ -33,6 +33,7 @@ interface MeasureTokenBudgetModule {
     activeToolNames: string[];
     modelApi?: string;
     modelProvider?: string;
+    details?: boolean;
   }): ParsedPrompt;
 }
 
@@ -288,6 +289,7 @@ describe('Atelier sidebar lifecycle', () => {
       activeToolNames: ['read'],
       modelApi: 'anthropic-messages',
       modelProvider: 'openrouter',
+      details: false,
     });
     expect(bus.emitted.at(-1)?.data).toMatchObject({
       type: 'register',
