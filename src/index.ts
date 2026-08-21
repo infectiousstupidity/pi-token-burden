@@ -6,12 +6,8 @@ import type { ExtensionFactory } from '@mariozechner/pi-coding-agent';
 
 import { attributeBasePrompt, extractBaseLines, extractContributions } from './base-trace/index.js';
 import type { BasePromptTraceResult } from './base-trace/index.js';
-import {
-  buildToolDefinitionsSection,
-  estimateTokens,
-  parseSystemPrompt,
-  toolEnvelopeForModel,
-} from './parser.js';
+import { measureTokenBudget } from './measureTokenBudget.js';
+import { estimateTokens } from './parser.js';
 import { showReport } from './report-view.js';
 import { saveSkillToggleResult } from './saveSkillToggleResult.js';
 import { SkillVisibilityStore, loadSettings } from './skill-visibility-store.js';
@@ -41,26 +37,15 @@ const EXTENSION: ExtensionFactory = (pi) => {
   pi.registerCommand('token-burden', {
     description: 'Show token budget breakdown and manage skills',
     handler: async (args, ctx) => {
-      const prompt = ctx.getSystemPrompt();
-      const parsed = parseSystemPrompt(prompt);
-
-      // Add tool definitions section (function schemas sent via tool-calling API)
-      const allTools = pi.getAllTools();
-      const activeTools = pi.getActiveTools();
       const rawModel: unknown = ctx.model;
       const model = isRecord(rawModel) ? rawModel : {};
-      const modelApi = typeof model.api === 'string' ? model.api : undefined;
-      const modelProvider = typeof model.provider === 'string' ? model.provider : undefined;
-      const toolSection = buildToolDefinitionsSection(
-        allTools,
-        activeTools,
-        toolEnvelopeForModel(modelApi, modelProvider),
-      );
-      if (toolSection) {
-        parsed.sections.push(toolSection);
-        parsed.totalTokens += toolSection.tokens;
-        parsed.totalChars += toolSection.chars;
-      }
+      const parsed = measureTokenBudget({
+        prompt: ctx.getSystemPrompt(),
+        allTools: pi.getAllTools(),
+        activeToolNames: pi.getActiveTools(),
+        modelApi: typeof model.api === 'string' ? model.api : undefined,
+        modelProvider: typeof model.provider === 'string' ? model.provider : undefined,
+      });
 
       const usage = ctx.getContextUsage();
       const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
