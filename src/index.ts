@@ -44,8 +44,6 @@ function sameToolDefinitions(left: ToolDefinitions, right: ToolDefinitions): boo
 
 const EXTENSION: ExtensionFactory = (pi) => {
   let atelierDiscovered = false;
-  let sessionContext: ExtensionContext | undefined;
-  let latestPrompt: string | undefined;
   let measurementCache: SidebarMeasurementCache | undefined;
   let pendingRefresh: PendingSidebarRefresh | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -68,7 +66,6 @@ const EXTENSION: ExtensionFactory = (pi) => {
     ) {
       parsed = cached.parsed;
     } else {
-      // Heavy tokenizer graph: evaluate only after Atelier has requested data.
       const { measureTokenBudget } = await import('./measureTokenBudget.js');
       parsed = measureTokenBudget({
         prompt,
@@ -76,6 +73,7 @@ const EXTENSION: ExtensionFactory = (pi) => {
         activeToolNames,
         modelApi,
         modelProvider,
+        details: false,
       });
       measurementCache = {
         prompt,
@@ -91,63 +89,55 @@ const EXTENSION: ExtensionFactory = (pi) => {
     sidebar.update(buildAtelierSidebarRows({ parsed, contextWindow }));
   };
 
-  const scheduleSidebarRefresh = (ctx: ExtensionContext, prompt: string): void => {
-    pendingRefresh = { ctx, prompt };
-    if (refreshTimer !== undefined) {
+  const flushPendingRefresh = (): void => {
+    if (!pendingRefresh || refreshTimer !== undefined) {
       return;
     }
 
-    // Token Burden is display-only. Let the current Pi lifecycle hook finish
-    // before doing tokenizer work, and collapse rapid events into one refresh.
+    const refresh = pendingRefresh;
+    pendingRefresh = undefined;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
-      const refresh = pendingRefresh;
-      pendingRefresh = undefined;
-      if (!refresh || !atelierDiscovered) {
-        return;
-      }
       void publishSidebar(refresh.ctx, refresh.prompt).catch(() => undefined);
     }, 0);
   };
 
   const sidebar = new AtelierSidebar(pi.events, {
     onDiscover: () => {
-      atelierDiscovered = true;
-      if (sessionContext) {
-        const prompt = latestPrompt ?? sessionContext.getSystemPrompt();
-        latestPrompt = prompt;
-        scheduleSidebarRefresh(sessionContext, prompt);
+      if (atelierDiscovered) {
+        return;
       }
+      atelierDiscovered = true;
+      sidebar.update([{ text: 'Updates after first turn', role: 'context' }]);
     },
   });
 
-  pi.on('session_start', (_event, ctx) => {
-    sessionContext = ctx;
-    latestPrompt = undefined;
+  pi.on('session_start', () => {
     measurementCache = undefined;
-    if (atelierDiscovered) {
-      const prompt = ctx.getSystemPrompt();
-      latestPrompt = prompt;
-      scheduleSidebarRefresh(ctx, prompt);
-    }
+    pendingRefresh = undefined;
   });
 
   pi.on('before_agent_start', (event, ctx) => {
-    sessionContext = ctx;
-    latestPrompt = event.systemPrompt;
     if (atelierDiscovered) {
-      scheduleSidebarRefresh(ctx, event.systemPrompt);
+      pendingRefresh = { ctx, prompt: event.systemPrompt };
     }
   });
 
-  pi.on('model_select', (_event, ctx) => {
-    sessionContext = ctx;
-    measurementCache = undefined;
-    if (atelierDiscovered) {
-      const prompt = latestPrompt ?? ctx.getSystemPrompt();
-      latestPrompt = prompt;
-      scheduleSidebarRefresh(ctx, prompt);
+  // Wait until the provider has started returning the assistant response before
+  // spending CPU on a display-only measurement. message_update happens after the
+  // request is already in flight; message_end covers empty/error responses.
+  pi.on('message_update', () => {
+    flushPendingRefresh();
+  });
+
+  pi.on('message_end', (event) => {
+    if (event.message.role === 'assistant') {
+      flushPendingRefresh();
     }
+  });
+
+  pi.on('model_select', () => {
+    measurementCache = undefined;
   });
 
   pi.registerCommand('token-burden', {
