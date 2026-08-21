@@ -42,6 +42,18 @@ Attach Source Trace to Tool Prompt Text, not to Combined System Prompt or Pi Cor
 
 Include tool/function schemas from `pi.getAllTools()` in the budget. These schemas are sent through the LLM tool-calling API and can be a substantial hidden context cost even when absent from literal system-prompt text.
 
+## Lazy command loading
+
+Keep the extension entrypoint startup-safe: `src/index.ts` only registers `/token-burden` and the Atelier sidebar listener. Heavy modules (tokenizer via `measureTokenBudget.ts` → `parser.ts`, report UI, skill scanning, base trace) are dynamically imported on first real use — the first `/token-burden` invocation or an actual Atelier measurement trigger (discover / agent event).
+
+Why: loading `gpt-tokenizer` and the report stack at extension load added roughly 400 ms to every pi startup (upstream issue #33) even for users who never run the command. ES module caching means the first invocation pays the load cost and later invocations in the same process are free.
+
+Boundary rule (must survive future feature integration): startup-safe code is command registration plus tiny event bootstrap only. If a live UI (e.g. the Atelier sidebar) needs token calculation, perform the heavy import only after the UI has actually requested or activated the panel — never at pi startup.
+
+The command module is named `runTokenBurden.ts` (not `token-burden-command.ts`) to satisfy the `@factory/filename-match-export` lint rule without a per-file override.
+
+See [[architecture/Token Budget Pipeline|Token Budget Pipeline]].
+
 ## Combined token burden taxonomy
 
 Use **Combined System Prompt** and **Combined Tool Definitions** as the top-level budget surfaces. "Combined" means the effective runtime surface is assembled from pi core plus user/project/extension contributions.
