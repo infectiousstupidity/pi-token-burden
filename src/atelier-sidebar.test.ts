@@ -89,6 +89,29 @@ describe('Atelier sidebar row formatting', () => {
     ]);
   });
 
+  it('uses the short Tool definitions label so the token count fits the panel', () => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [
+          {
+            label: 'Tool definitions (2 active, 3 total)',
+            chars: 1,
+            tokens: 1_900,
+            tools: { active: [], inactive: [] },
+          },
+        ],
+        totalChars: 1,
+        totalTokens: 1_900,
+        skills: [],
+      },
+    });
+
+    expect(rows).toEqual([
+      { text: '1.9k tokens', role: 'context' },
+      { text: 'Tool definitions 1.9k' },
+    ]);
+  });
+
   it.each([undefined, 0])('shows total tokens when context window is %s', (contextWindow) => {
     const rows = buildAtelierSidebarRows({
       parsed: {
@@ -196,6 +219,56 @@ describe('Atelier sidebar publisher', () => {
     expect(onDiscover).toHaveBeenCalledWith('request-42');
   });
 
+  it('replays the panel after an async discovery callback settles', async () => {
+    const bus = new FakeEventBus();
+    let resolveDiscovery: (() => void) | undefined;
+    const discovery = new Promise<void>((resolve) => {
+      resolveDiscovery = resolve;
+    });
+    const onDiscover = vi.fn(() => discovery);
+    const publisher = new AtelierSidebar(bus, { onDiscover });
+    publisher.update([{ text: 'Current total' }]);
+    bus.emitted.length = 0;
+
+    bus.send({ version: 1, type: 'discover', requestId: 'async-request' });
+    expect(bus.emitted).toEqual([]);
+
+    resolveDiscovery?.();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(onDiscover).toHaveBeenCalledOnce();
+    expect(bus.emitted.at(-1)?.data).toEqual({
+      version: 1,
+      type: 'register',
+      source: 'pi-token-burden',
+      revision: 2,
+      panel: {
+        id: 'token-burden:budget',
+        title: 'Token burden',
+        rows: [{ text: 'Current total' }],
+      },
+      requestId: 'async-request',
+    });
+  });
+
+  it('skips the replay when an async discovery callback rejects', async () => {
+    const bus = new FakeEventBus();
+    const onDiscover = vi.fn(() => Promise.reject(new Error('measurement failed')));
+    const publisher = new AtelierSidebar(bus, { onDiscover });
+    publisher.update([{ text: 'Current total' }]);
+    bus.emitted.length = 0;
+
+    bus.send({ version: 1, type: 'discover', requestId: 'failing-request' });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(onDiscover).toHaveBeenCalledOnce();
+    expect(bus.emitted).toEqual([]);
+  });
+
   it('signals discovery without emitting a panel before the first update', () => {
     const bus = new FakeEventBus();
     const onDiscover = vi.fn<(requestId: string) => void>();
@@ -269,6 +342,29 @@ describe('Atelier sidebar publisher', () => {
 
     bus.send({ version: 1, type: 'discover', requestId: 'after-dispose' });
 
+    expect(bus.emitted).toEqual([]);
+  });
+
+  it('does not replay the panel after disposal during in-flight async discovery', async () => {
+    const bus = new FakeEventBus();
+    let resolveDiscovery: (() => void) | undefined;
+    const discovery = new Promise<void>((resolve) => {
+      resolveDiscovery = resolve;
+    });
+    const onDiscover = vi.fn(() => discovery);
+    const publisher = new AtelierSidebar(bus, { onDiscover });
+    publisher.update([{ text: 'Current total' }]);
+    bus.emitted.length = 0;
+
+    bus.send({ version: 1, type: 'discover', requestId: 'inflight-request' });
+    publisher.dispose();
+
+    resolveDiscovery?.();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(onDiscover).toHaveBeenCalledOnce();
     expect(bus.emitted).toEqual([]);
   });
 });

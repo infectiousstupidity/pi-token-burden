@@ -76,6 +76,15 @@ export function formatCompactTokens(tokens: number): string {
   return `${String(rounded)}${scale.suffix}`;
 }
 
+/**
+ * The Tool definitions label carries active/total inventory in parentheses,
+ * which is too wide for the sidebar. The counts remain available in the
+ * /token-burden overlay, so the sidebar row uses the short label.
+ */
+function sidebarSectionLabel(section: { label: string; tools?: unknown }): string {
+  return section.tools ? 'Tool definitions' : section.label;
+}
+
 /** Build a compact read-only summary from top-level Budget Sections. */
 export function buildAtelierSidebarRows({
   parsed,
@@ -107,7 +116,7 @@ export function buildAtelierSidebarRows({
   return [
     { text: totalText, role: 'context' },
     ...visibleSections.map((section) => ({
-      text: `${section.label} ${formatCompactTokens(section.tokens)}`,
+      text: `${sidebarSectionLabel(section)} ${formatCompactTokens(section.tokens)}`,
     })),
   ];
 }
@@ -129,20 +138,39 @@ export class AtelierSidebar {
   readonly panelId = ATELIER_SIDEBAR_PANEL_ID;
   private currentPanel: CurrentPanel | null = null;
   private revision = 0;
+  private disposed = false;
   private readonly unsubscribe: () => void;
 
   constructor(
     private readonly events: EventBus,
-    options: { onDiscover?(requestId: string): void } = {},
+    options: { onDiscover?(requestId: string): void | Promise<void> } = {},
   ) {
     this.unsubscribe = events.on(ATELIER_SIDEBAR_CHANNEL, (data) => {
       if (!isDiscoveryEvent(data)) {
         return;
       }
 
-      options.onDiscover?.(data.requestId);
-      this.emitRegister(data.requestId);
+      const discovery = options.onDiscover?.(data.requestId);
+      if (discovery instanceof Promise) {
+        // Async discovery (e.g. deferred measurement): replay the panel
+        // only after the callback settles.
+        void this.replayAfterDiscovery(discovery, data.requestId);
+      } else {
+        this.emitRegister(data.requestId);
+      }
     });
+  }
+
+  /** Replay the panel once an async discovery callback settles. */
+  private async replayAfterDiscovery(discovery: Promise<void>, requestId: string): Promise<void> {
+    try {
+      await discovery;
+    } catch {
+      // Discovery measurement failed; no panel to replay. Swallowed
+      // because console is disallowed by the project lint config.
+      return;
+    }
+    this.emitRegister(requestId);
   }
 
   update(rows: readonly AtelierSidebarRow[]): void {
@@ -171,11 +199,12 @@ export class AtelierSidebar {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.unsubscribe();
   }
 
   private emitRegister(requestId?: string): void {
-    if (this.currentPanel === null) {
+    if (this.disposed || this.currentPanel === null) {
       return;
     }
 

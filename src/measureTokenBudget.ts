@@ -1,5 +1,8 @@
+import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
+
 import { buildToolDefinitionsSection, parseSystemPrompt, toolEnvelopeForModel } from './parser.js';
 import type { ParsedPrompt } from './types.js';
+import { isRecord } from './utils.js';
 
 interface ToolDefinitionInput {
   name: string;
@@ -37,4 +40,21 @@ export function measureTokenBudget({
   }
 
   return parsed;
+}
+
+/** Measure the model-facing prompt and tool schemas for a live session context. */
+export function measureForContext(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  prompt: string,
+): ParsedPrompt {
+  const rawModel: unknown = ctx.model;
+  const model = isRecord(rawModel) ? rawModel : {};
+  return measureTokenBudget({
+    prompt,
+    allTools: pi.getAllTools(),
+    activeToolNames: pi.getActiveTools(),
+    modelApi: typeof model.api === 'string' ? model.api : undefined,
+    modelProvider: typeof model.provider === 'string' ? model.provider : undefined,
+  });
 }

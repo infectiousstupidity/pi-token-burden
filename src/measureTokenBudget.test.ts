@@ -1,3 +1,6 @@
+import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
+import { fromPartial } from '@total-typescript/shoehorn';
+
 import type { ParsedPrompt, PromptSection } from './types.js';
 
 interface ToolDefinition {
@@ -93,5 +96,53 @@ describe('Token Budget Pipeline measurement', () => {
     expect(measured).toStrictEqual(parsed);
     expect(measured.totalChars).toBe(6);
     expect(measured.totalTokens).toBe(2);
+  });
+
+  it('measures a live session context with its model api/provider', async () => {
+    PARSE_SYSTEM_PROMPT_MOCK.mockReturnValue({
+      sections: [],
+      totalChars: 6,
+      totalTokens: 2,
+      skills: [],
+    });
+    TOOL_ENVELOPE_FOR_MODEL_MOCK.mockReturnValue('anthropic');
+    BUILD_TOOL_DEFINITIONS_SECTION_MOCK.mockReturnValue(null);
+
+    const { measureForContext } = await import('./measureTokenBudget.js');
+    const pi = fromPartial<ExtensionAPI>({
+      getAllTools: () => tools,
+      getActiveTools: () => ['read'],
+    });
+    const ctx = fromPartial<ExtensionContext>({
+      model: { api: 'anthropic-messages', provider: 'openrouter' },
+    });
+
+    measureForContext(pi, ctx, 'prompt');
+
+    expect(TOOL_ENVELOPE_FOR_MODEL_MOCK).toHaveBeenCalledWith('anthropic-messages', 'openrouter');
+    expect(BUILD_TOOL_DEFINITIONS_SECTION_MOCK).toHaveBeenCalledWith(tools, ['read'], 'anthropic');
+  });
+
+  it('omits model api/provider from a live session context when the model is absent', async () => {
+    PARSE_SYSTEM_PROMPT_MOCK.mockReturnValue({
+      sections: [],
+      totalChars: 6,
+      totalTokens: 2,
+      skills: [],
+    });
+    TOOL_ENVELOPE_FOR_MODEL_MOCK.mockReturnValue('openai-responses');
+    BUILD_TOOL_DEFINITIONS_SECTION_MOCK.mockReturnValue(null);
+
+    const { measureForContext } = await import('./measureTokenBudget.js');
+    const pi = fromPartial<ExtensionAPI>({
+      getAllTools: () => [],
+      getActiveTools: () => [],
+    });
+    const ctx = fromPartial<ExtensionContext>({});
+
+    measureForContext(pi, ctx, 'prompt');
+
+    expect(TOOL_ENVELOPE_FOR_MODEL_MOCK).toHaveBeenCalledWith(undefined, undefined);
+    expect(BUILD_TOOL_DEFINITIONS_SECTION_MOCK).toHaveBeenCalledWith([], [], 'openai-responses');
   });
 });
