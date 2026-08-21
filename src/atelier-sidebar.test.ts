@@ -1,4 +1,4 @@
-import { AtelierSidebar } from './atelier-sidebar.js';
+import { AtelierSidebar, buildAtelierSidebarRows, formatCompactTokens } from './atelier-sidebar.js';
 import { isRecord } from './utils.js';
 
 const ATELIER_SIDEBAR_CHANNEL = 'pi-atelier:sidebar-panels';
@@ -44,6 +44,79 @@ function eventData(bus: FakeEventBus): Array<Record<string, unknown>> {
     return data;
   });
 }
+
+describe('Atelier sidebar row formatting', () => {
+  it.each([
+    [950, '950'],
+    [1_200, '1.2k'],
+    [12_400, '12.4k'],
+    [131_000, '131k'],
+  ])('formats %i tokens as %s', (tokens, formatted) => {
+    expect(formatCompactTokens(tokens)).toBe(formatted);
+  });
+
+  it('shows context-window usage when the window is known and positive', () => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [{ label: 'Base prompt', chars: 20_000, tokens: 5_100 }],
+        totalChars: 50_000,
+        totalTokens: 12_400,
+        skills: [],
+      },
+      contextWindow: 131_000,
+    });
+
+    expect(rows).toEqual([
+      { text: '12.4k / 131k (9.5%)', role: 'context' },
+      { text: 'Base prompt 5.1k' },
+    ]);
+  });
+
+  it.each([undefined, 0])('shows total tokens when context window is %s', (contextWindow) => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [],
+        totalChars: 4_000,
+        totalTokens: 950,
+        skills: [],
+      },
+      contextWindow,
+    });
+
+    expect(rows).toEqual([{ text: '950 tokens', role: 'context' }]);
+  });
+
+  it('sorts top-level Budget Sections and combines overflow into Other', () => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [
+          { label: 'Metadata', chars: 1, tokens: 300 },
+          { label: 'Base prompt', chars: 1, tokens: 5_100 },
+          { label: 'Project instructions', chars: 1, tokens: 3_000 },
+          { label: 'Skills', chars: 1, tokens: 2_100 },
+          { label: 'Tool definitions', chars: 1, tokens: 1_900 },
+          { label: 'System append', chars: 1, tokens: 600 },
+          { label: 'Prompt overhead', chars: 1, tokens: 200 },
+          { label: 'Extra context', chars: 1, tokens: 100 },
+        ],
+        totalChars: 1,
+        totalTokens: 13_300,
+        skills: [],
+      },
+    });
+
+    expect(rows).toEqual([
+      { text: '13.3k tokens', role: 'context' },
+      { text: 'Base prompt 5.1k' },
+      { text: 'Project instructions 3k' },
+      { text: 'Skills 2.1k' },
+      { text: 'Tool definitions 1.9k' },
+      { text: 'System append 600' },
+      { text: 'Metadata 300' },
+      { text: 'Other 300' },
+    ]);
+  });
+});
 
 describe('Atelier sidebar publisher', () => {
   it('emits a valid register event on update', () => {

@@ -1,3 +1,4 @@
+import type { ParsedPrompt } from './types.js';
 import { isRecord } from './utils.js';
 
 const ATELIER_SIDEBAR_CHANNEL = 'pi-atelier:sidebar-panels';
@@ -9,6 +10,11 @@ const PANEL_TITLE = 'Token burden';
 interface AtelierSidebarRow {
   text: string;
   role?: string;
+}
+
+interface AtelierSidebarRowsInput {
+  parsed: ParsedPrompt;
+  contextWindow?: number;
 }
 
 interface EventBus {
@@ -37,6 +43,62 @@ interface UnregisterEvent {
   source: typeof SOURCE;
   revision: number;
   id: typeof ATELIER_SIDEBAR_PANEL_ID;
+}
+
+const MAX_PANEL_ROWS = 8;
+const MAX_SECTION_ROWS = MAX_PANEL_ROWS - 1;
+
+/** Format a token count without locale- or terminal-dependent output. */
+export function formatCompactTokens(tokens: number): string {
+  const scales = [
+    { minimum: 1_000_000_000, divisor: 1_000_000_000, suffix: 'b' },
+    { minimum: 1_000_000, divisor: 1_000_000, suffix: 'm' },
+    { minimum: 1_000, divisor: 1_000, suffix: 'k' },
+  ];
+  const scale = scales.find(({ minimum }) => Math.abs(tokens) >= minimum);
+  if (!scale) {
+    return String(tokens);
+  }
+
+  const scaled = tokens / scale.divisor;
+  const rounded = Math.abs(scaled) < 100 ? Math.round(scaled * 10) / 10 : Math.round(scaled);
+  return `${String(rounded)}${scale.suffix}`;
+}
+
+/** Build a compact read-only summary from top-level Budget Sections. */
+export function buildAtelierSidebarRows({
+  parsed,
+  contextWindow,
+}: AtelierSidebarRowsInput): AtelierSidebarRow[] {
+  const formattedTotal = formatCompactTokens(parsed.totalTokens);
+  const hasContextWindow =
+    contextWindow !== undefined && Number.isFinite(contextWindow) && contextWindow > 0;
+  const totalText = hasContextWindow
+    ? `${formattedTotal} / ${formatCompactTokens(contextWindow)} (${String(
+        Math.round((parsed.totalTokens / contextWindow) * 1_000) / 10,
+      )}%)`
+    : `${formattedTotal} tokens`;
+
+  const sortedSections = parsed.sections.toSorted((left, right) => right.tokens - left.tokens);
+  const visibleSections =
+    sortedSections.length <= MAX_SECTION_ROWS
+      ? sortedSections
+      : [
+          ...sortedSections.slice(0, MAX_SECTION_ROWS - 1),
+          {
+            label: 'Other',
+            tokens: sortedSections
+              .slice(MAX_SECTION_ROWS - 1)
+              .reduce((total, section) => total + section.tokens, 0),
+          },
+        ];
+
+  return [
+    { text: totalText, role: 'context' },
+    ...visibleSections.map((section) => ({
+      text: `${section.label} ${formatCompactTokens(section.tokens)}`,
+    })),
+  ];
 }
 
 function isDiscoveryEvent(value: unknown): value is {
