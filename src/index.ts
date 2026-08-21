@@ -97,9 +97,8 @@ const EXTENSION: ExtensionFactory = (pi) => {
       return;
     }
 
-    // Token Burden is display-only. Run after the current Pi lifecycle hook returns
-    // so tokenization can never hold up the model request. Replacing pendingRefresh
-    // also coalesces multiple lifecycle events into one update.
+    // Token Burden is display-only. Let the current Pi lifecycle hook finish
+    // before doing tokenizer work, and collapse rapid events into one refresh.
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
       const refresh = pendingRefresh;
