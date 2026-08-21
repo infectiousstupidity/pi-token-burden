@@ -33,6 +33,12 @@ To try it for a single session without installing, use `pi -e npm:pi-token-burde
 
 - [pi](https://github.com/mariozechner/pi) v0.55.1 or later
 
+### Pi Atelier sidebar
+
+If [Pi Atelier](https://github.com/michaelmjhhhh/pi-atelier) is installed, Token Burden can publish a compact, read-only budget summary to its sidebar. Enable and position the `Token burden` panel from Atelier's display settings.
+
+The `/token-burden` command remains the full interactive view. Pi Atelier is optional and is not a dependency of this package.
+
 ## Usage
 
 Type `/token-burden` in any pi session. An overlay appears with a stacked bar
