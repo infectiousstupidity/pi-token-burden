@@ -42,17 +42,38 @@ interface ParsedSkillEntry extends SkillEntry {
   end: number;
 }
 
+interface MeasurementOptions {
+  details?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers (defined before use to satisfy no-use-before-define)
 // ---------------------------------------------------------------------------
 
-function measureSpan(label: string, prompt: string, start: number, end: number): PromptSection {
+function prefixTokens(prompt: string, end: number, cache: Map<number, number>): number {
+  const cached = cache.get(end);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const tokens = estimateTokens(prompt.slice(0, end));
+  cache.set(end, tokens);
+  return tokens;
+}
+
+function measureSpan(
+  label: string,
+  prompt: string,
+  start: number,
+  end: number,
+  cache: Map<number, number>,
+  details: boolean,
+): PromptSection {
   const text = prompt.slice(start, end);
   return {
     label,
     chars: text.length,
-    tokens: estimateTokens(prompt.slice(0, end)) - estimateTokens(prompt.slice(0, start)),
-    content: text,
+    tokens: prefixTokens(prompt, end, cache) - prefixTokens(prompt, start, cache),
+    ...(details ? { content: text } : {}),
   };
 }
 
@@ -222,9 +243,11 @@ function findSkillsSectionEnd(
  *   - `<available_skills>` / `</available_skills>` XML block
  *   - `Current date:` / `Current date and time:` footer
  */
-export function parseSystemPrompt(prompt: string): ParsedPrompt {
+export function parseSystemPrompt(prompt: string, options: MeasurementOptions = {}): ParsedPrompt {
+  const details = options.details ?? true;
   const sections: PromptSection[] = [];
   const skills: SkillEntry[] = [];
+  const prefixCache = new Map<number, number>([[0, 0]]);
 
   const projectCtxIdx = findProjectContextStart(prompt);
   const skillsPreambleIdx = prompt.indexOf(
@@ -253,11 +276,18 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
     }
   }
 
-  sections.push(measureSpan('Base prompt', prompt, 0, baseSectionEnd));
+  sections.push(measureSpan('Base prompt', prompt, 0, baseSectionEnd, prefixCache, details));
 
   if (systemGapStart >= 0 && systemGapEnd >= 0) {
     sections.push(
-      measureSpan('SYSTEM.md / APPEND_SYSTEM.md', prompt, systemGapStart, systemGapEnd),
+      measureSpan(
+        'SYSTEM.md / APPEND_SYSTEM.md',
+        prompt,
+        systemGapStart,
+        systemGapEnd,
+        prefixCache,
+        details,
+      ),
     );
   }
 
@@ -266,34 +296,42 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
     const contextStart = projectCtxIdx;
     const contextEndBoundary = firstPositive(skillsPreambleIdx, dateLineIdx);
     const contextEnd = contextEndBoundary >= 0 ? contextEndBoundary : prompt.length;
-    const contextBlock = prompt.slice(contextStart, contextEnd);
     const contextSection = measureSpan(
       'Context files (AGENTS.md / CLAUDE.md)',
       prompt,
       contextStart,
       contextEnd,
+      prefixCache,
+      details,
     );
 
-    const contextFiles = parseContextFileSpans(contextBlock);
-    const children = contextFiles.map((file): ChildRow => {
-      const child = measureSpan(
-        file.path,
-        prompt,
-        contextStart + file.start,
-        contextStart + file.end,
-      );
-      return {
-        label: child.label,
-        chars: child.chars,
-        tokens: child.tokens,
-        content: child.content,
-      };
-    });
+    if (!details) {
+      sections.push(contextSection);
+    } else {
+      const contextBlock = prompt.slice(contextStart, contextEnd);
+      const contextFiles = parseContextFileSpans(contextBlock);
+      const children = contextFiles.map((file): ChildRow => {
+        const child = measureSpan(
+          file.path,
+          prompt,
+          contextStart + file.start,
+          contextStart + file.end,
+          prefixCache,
+          true,
+        );
+        return {
+          label: child.label,
+          chars: child.chars,
+          tokens: child.tokens,
+          content: child.content,
+        };
+      });
 
-    sections.push({
-      ...contextSection,
-      children: appendReconciliationChild(children, contextSection, 'Context wrapper / overhead'),
-    });
+      sections.push({
+        ...contextSection,
+        children: appendReconciliationChild(children, contextSection, 'Context wrapper / overhead'),
+      });
+    }
   }
 
   // 3. Skills section
@@ -301,7 +339,8 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
     const skillsSectionStart = skillsPreambleIdx;
     const skillsSectionEnd = findSkillsSectionEnd(availableSkillsEnd, dateLineIdx, prompt.length);
     const parsedSkillEntries: ParsedSkillEntry[] = [];
-    if (availableSkillsStart !== -1 && availableSkillsEnd !== -1) {
+
+    if (details && availableSkillsStart !== -1 && availableSkillsEnd !== -1) {
       const xmlBlock = prompt.slice(
         availableSkillsStart,
         availableSkillsEnd + '</available_skills>'.length,
@@ -319,47 +358,58 @@ export function parseSystemPrompt(prompt: string): ParsedPrompt {
     }
 
     const skillsSection = measureSpan(
-      `Skills (${String(skills.length)})`,
+      details ? `Skills (${String(skills.length)})` : 'Skills',
       prompt,
       skillsSectionStart,
       skillsSectionEnd,
+      prefixCache,
+      details,
     );
-    const children = parsedSkillEntries.map((entry): ChildRow => {
-      const child = measureSpan(
-        entry.name,
-        prompt,
-        availableSkillsStart + entry.start,
-        availableSkillsStart + entry.end,
-      );
-      const promptSkill = skills.find((skill) => skill.name === entry.name);
-      if (promptSkill) {
-        promptSkill.tokens = child.tokens;
-      }
-      return {
-        label: child.label,
-        chars: child.chars,
-        tokens: child.tokens,
-        content: child.content,
-      };
-    });
 
-    sections.push({
-      ...skillsSection,
-      children: appendReconciliationChild(
-        children,
-        skillsSection,
-        'Skills preamble / XML overhead',
-      ),
-    });
+    if (!details) {
+      sections.push(skillsSection);
+    } else {
+      const children = parsedSkillEntries.map((entry): ChildRow => {
+        const child = measureSpan(
+          entry.name,
+          prompt,
+          availableSkillsStart + entry.start,
+          availableSkillsStart + entry.end,
+          prefixCache,
+          true,
+        );
+        const promptSkill = skills.find((skill) => skill.name === entry.name);
+        if (promptSkill) {
+          promptSkill.tokens = child.tokens;
+        }
+        return {
+          label: child.label,
+          chars: child.chars,
+          tokens: child.tokens,
+          content: child.content,
+        };
+      });
+
+      sections.push({
+        ...skillsSection,
+        children: appendReconciliationChild(
+          children,
+          skillsSection,
+          'Skills preamble / XML overhead',
+        ),
+      });
+    }
   }
 
   // 4. Metadata footer
   if (dateLineIdx !== -1) {
-    sections.push(measureSpan('Metadata (date/time, cwd)', prompt, dateLineIdx, prompt.length));
+    sections.push(
+      measureSpan('Metadata (date/time, cwd)', prompt, dateLineIdx, prompt.length, prefixCache, details),
+    );
   }
 
   const totalChars = prompt.length;
-  const totalTokens = estimateTokens(prompt);
+  const totalTokens = prefixTokens(prompt, prompt.length, prefixCache);
 
   return { sections, totalChars, totalTokens, skills };
 }
@@ -554,13 +604,28 @@ export function buildToolDefinitionsSection(
   tools: ToolDefinitionInput[],
   activeToolNames?: string[],
   countedEnvelope: ToolEnvelope = ToolEnvelope.COMPACT,
+  options: MeasurementOptions = {},
 ): PromptSection | null {
   if (tools.length === 0) {
     return null;
   }
 
+  const details = options.details ?? true;
   const activeSet = activeToolNames ? new Set(activeToolNames) : null;
   const countedTools = activeSet ? tools.filter((tool) => activeSet.has(tool.name)) : tools;
+  const activeEnvelopePayload = buildToolEnvelopePayload(countedTools, countedEnvelope);
+  const totalContent = JSON.stringify(activeEnvelopePayload, null, 2);
+  const countedContent = JSON.stringify(activeEnvelopePayload);
+  const totalTokens = estimateTokens(countedContent);
+  const totalChars = totalContent.length;
+  const label = activeSet
+    ? `Tool definitions (${String(countedTools.length)} active, ${String(tools.length)} total)`
+    : `Tool definitions (${String(tools.length)})`;
+
+  if (!details) {
+    return { label, chars: totalChars, tokens: totalTokens };
+  }
+
   const inactiveTools = activeSet ? tools.filter((tool) => !activeSet.has(tool.name)) : [];
 
   function serializeTools(input: ToolDefinitionInput[]): ToolEntry[] {
@@ -577,7 +642,6 @@ export function buildToolDefinitionsSection(
     });
   }
 
-  const activeEnvelopePayload = buildToolEnvelopePayload(countedTools, countedEnvelope);
   const activeEntries = serializeTools(countedTools);
   const inactiveEntries = serializeTools(inactiveTools);
   const variants = buildToolEnvelopeVariants(countedTools).map((variant) => {
@@ -596,9 +660,6 @@ export function buildToolDefinitionsSection(
     tokens: number;
     content?: string;
   }[] = [];
-  const totalContent = JSON.stringify(activeEnvelopePayload, null, 2);
-  const totalTokens = estimateTokens(JSON.stringify(activeEnvelopePayload));
-  const totalChars = totalContent.length;
 
   for (const tool of activeEntries) {
     children.push({
@@ -618,10 +679,6 @@ export function buildToolDefinitionsSection(
     },
     'Tool envelope overhead',
   );
-
-  const label = activeSet
-    ? `Tool definitions (${String(countedTools.length)} active, ${String(tools.length)} total)`
-    : `Tool definitions (${String(tools.length)})`;
 
   return {
     label,
