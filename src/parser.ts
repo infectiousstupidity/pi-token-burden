@@ -40,6 +40,7 @@ interface ContextFileSpan {
 interface ParsedSkillEntry extends SkillEntry {
   start: number;
   end: number;
+  content: string;
 }
 
 interface MeasurementOptions {
@@ -74,6 +75,16 @@ function measureSpan(
     chars: text.length,
     tokens: prefixTokens(prompt, end, cache) - prefixTokens(prompt, start, cache),
     ...(details ? { content: text } : {}),
+  };
+}
+
+function measureLiteralSpan(label: string, prompt: string, start: number, end: number): ChildRow {
+  const content = prompt.slice(start, end);
+  return {
+    label,
+    chars: content.length,
+    tokens: estimateTokens(content),
+    content,
   };
 }
 
@@ -185,6 +196,7 @@ function parseSkillEntries(xmlBlock: string): ParsedSkillEntry[] {
       tokens: estimateTokens(fullEntry),
       start: match.index,
       end: match.index + fullEntry.length,
+      content: fullEntry,
     });
   }
 
@@ -310,22 +322,14 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
     } else {
       const contextBlock = prompt.slice(contextStart, contextEnd);
       const contextFiles = parseContextFileSpans(contextBlock);
-      const children = contextFiles.map((file): ChildRow => {
-        const child = measureSpan(
+      const children = contextFiles.map((file): ChildRow =>
+        measureLiteralSpan(
           file.path,
           prompt,
           contextStart + file.start,
           contextStart + file.end,
-          prefixCache,
-          true,
-        );
-        return {
-          label: child.label,
-          chars: child.chars,
-          tokens: child.tokens,
-          content: child.content,
-        };
-      });
+        ),
+      );
 
       sections.push({
         ...contextSection,
@@ -369,26 +373,12 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
     if (!details) {
       sections.push(skillsSection);
     } else {
-      const children = parsedSkillEntries.map((entry): ChildRow => {
-        const child = measureSpan(
-          entry.name,
-          prompt,
-          availableSkillsStart + entry.start,
-          availableSkillsStart + entry.end,
-          prefixCache,
-          true,
-        );
-        const promptSkill = skills.find((skill) => skill.name === entry.name);
-        if (promptSkill) {
-          promptSkill.tokens = child.tokens;
-        }
-        return {
-          label: child.label,
-          chars: child.chars,
-          tokens: child.tokens,
-          content: child.content,
-        };
-      });
+      const children = parsedSkillEntries.map((entry): ChildRow => ({
+        label: entry.name,
+        chars: entry.chars,
+        tokens: entry.tokens,
+        content: entry.content,
+      }));
 
       sections.push({
         ...skillsSection,
