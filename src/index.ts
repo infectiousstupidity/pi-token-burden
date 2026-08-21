@@ -20,7 +20,7 @@ interface SidebarMeasurementCache {
 
 interface PendingSidebarRefresh {
   ctx: ExtensionContext;
-  prompt: string;
+  prompt?: string;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -44,6 +44,7 @@ function sameToolDefinitions(left: ToolDefinitions, right: ToolDefinitions): boo
 
 const EXTENSION: ExtensionFactory = (pi) => {
   let atelierDiscovered = false;
+  let sessionContext: ExtensionContext | undefined;
   let measurementCache: SidebarMeasurementCache | undefined;
   let pendingRefresh: PendingSidebarRefresh | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -89,6 +90,13 @@ const EXTENSION: ExtensionFactory = (pi) => {
     sidebar.update(buildAtelierSidebarRows({ parsed, contextWindow }));
   };
 
+  const cancelRefresh = (): void => {
+    if (refreshTimer !== undefined) {
+      clearTimeout(refreshTimer);
+      refreshTimer = undefined;
+    }
+  };
+
   const flushPendingRefresh = (): void => {
     if (!pendingRefresh || refreshTimer !== undefined) {
       return;
@@ -98,8 +106,14 @@ const EXTENSION: ExtensionFactory = (pi) => {
     pendingRefresh = undefined;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
-      void publishSidebar(refresh.ctx, refresh.prompt).catch(() => undefined);
+      const prompt = refresh.prompt ?? refresh.ctx.getSystemPrompt();
+      void publishSidebar(refresh.ctx, prompt).catch(() => undefined);
     }, 0);
+  };
+
+  const scheduleCurrentPrompt = (ctx: ExtensionContext): void => {
+    pendingRefresh = { ctx };
+    flushPendingRefresh();
   };
 
   const sidebar = new AtelierSidebar(pi.events, {
@@ -108,26 +122,37 @@ const EXTENSION: ExtensionFactory = (pi) => {
         return;
       }
       atelierDiscovered = true;
-      sidebar.update([{ text: 'Updates after first turn', role: 'context' }]);
+      sidebar.update([{ text: 'Measuring…', role: 'context' }]);
+      if (sessionContext) {
+        scheduleCurrentPrompt(sessionContext);
+      }
     },
   });
 
-  pi.on('session_start', () => {
+  pi.on('session_start', (_event, ctx) => {
+    sessionContext = ctx;
     measurementCache = undefined;
     pendingRefresh = undefined;
-  });
-
-  pi.on('before_agent_start', (event, ctx) => {
+    cancelRefresh();
     if (atelierDiscovered) {
-      pendingRefresh = { ctx, prompt: event.systemPrompt };
+      scheduleCurrentPrompt(ctx);
     }
   });
 
-  // Wait until the provider has started returning the assistant response before
-  // spending CPU on a display-only measurement. message_update happens after the
-  // request is already in flight; message_end covers empty/error responses.
-  pi.on('message_update', () => {
-    flushPendingRefresh();
+  pi.on('before_agent_start', (event, ctx) => {
+    if (!atelierDiscovered) {
+      return;
+    }
+
+    // If the startup refresh has not started yet, let the model go first.
+    cancelRefresh();
+    pendingRefresh = { ctx, prompt: event.systemPrompt };
+  });
+
+  pi.on('message_start', (event) => {
+    if (event.message.role === 'assistant') {
+      flushPendingRefresh();
+    }
   });
 
   pi.on('message_end', (event) => {
@@ -136,8 +161,12 @@ const EXTENSION: ExtensionFactory = (pi) => {
     }
   });
 
-  pi.on('model_select', () => {
+  pi.on('model_select', (_event, ctx) => {
     measurementCache = undefined;
+    if (atelierDiscovered && !pendingRefresh) {
+      cancelRefresh();
+      scheduleCurrentPrompt(ctx);
+    }
   });
 
   pi.registerCommand('token-burden', {
