@@ -77,12 +77,13 @@ export function formatCompactTokens(tokens: number): string {
 }
 
 /**
- * The Tool definitions label carries active/total inventory in parentheses,
- * which is too wide for the sidebar. The counts remain available in the
- * /token-burden overlay, so the sidebar row uses the short label.
+ * Some labels carry details in parentheses (Tool definitions inventory,
+ * Context files filenames), which is too wide for the sidebar. The details
+ * remain available in the /token-burden overlay, so the sidebar row uses
+ * the short label.
  */
-function sidebarSectionLabel(section: { label: string; tools?: unknown }): string {
-  return section.tools ? 'Tool definitions' : section.label;
+function sidebarSectionLabel(section: { label: string }): string {
+  return section.label.replace(/\s*\(.*\)$/, '');
 }
 
 /** Build a compact read-only summary from top-level Budget Sections. */

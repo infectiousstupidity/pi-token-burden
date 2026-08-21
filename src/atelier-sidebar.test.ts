@@ -112,6 +112,28 @@ describe('Atelier sidebar row formatting', () => {
     ]);
   });
 
+  it('uses the short Context files label so the token count fits the panel', () => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [
+          {
+            label: 'Context files (AGENTS.md / CLAUDE.md)',
+            chars: 1,
+            tokens: 2_400,
+          },
+        ],
+        totalChars: 1,
+        totalTokens: 2_400,
+        skills: [],
+      },
+    });
+
+    expect(rows).toEqual([
+      { text: '2.4k tokens', role: 'context' },
+      { text: 'Context files 2.4k' },
+    ]);
+  });
+
   it.each([undefined, 0])('shows total tokens when context window is %s', (contextWindow) => {
     const rows = buildAtelierSidebarRows({
       parsed: {
