@@ -76,6 +76,15 @@ export function formatCompactTokens(tokens: number): string {
   return `${String(rounded)}${scale.suffix}`;
 }
 
+/**
+ * The Tool definitions label carries active/total inventory in parentheses,
+ * which is too wide for the sidebar. The counts remain available in the
+ * /token-burden overlay, so the sidebar row uses the short label.
+ */
+function sidebarSectionLabel(section: { label: string; tools?: unknown }): string {
+  return section.tools ? 'Tool definitions' : section.label;
+}
+
 /** Build a compact read-only summary from top-level Budget Sections. */
 export function buildAtelierSidebarRows({
   parsed,
@@ -107,7 +116,7 @@ export function buildAtelierSidebarRows({
   return [
     { text: totalText, role: 'context' },
     ...visibleSections.map((section) => ({
-      text: `${section.label} ${formatCompactTokens(section.tokens)}`,
+      text: `${sidebarSectionLabel(section)} ${formatCompactTokens(section.tokens)}`,
     })),
   ];
 }

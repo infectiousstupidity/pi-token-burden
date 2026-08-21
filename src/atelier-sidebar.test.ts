@@ -89,6 +89,29 @@ describe('Atelier sidebar row formatting', () => {
     ]);
   });
 
+  it('uses the short Tool definitions label so the token count fits the panel', () => {
+    const rows = buildAtelierSidebarRows({
+      parsed: {
+        sections: [
+          {
+            label: 'Tool definitions (2 active, 3 total)',
+            chars: 1,
+            tokens: 1_900,
+            tools: { active: [], inactive: [] },
+          },
+        ],
+        totalChars: 1,
+        totalTokens: 1_900,
+        skills: [],
+      },
+    });
+
+    expect(rows).toEqual([
+      { text: '1.9k tokens', role: 'context' },
+      { text: 'Tool definitions 1.9k' },
+    ]);
+  });
+
   it.each([undefined, 0])('shows total tokens when context window is %s', (contextWindow) => {
     const rows = buildAtelierSidebarRows({
       parsed: {
