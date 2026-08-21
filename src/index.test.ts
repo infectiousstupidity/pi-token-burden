@@ -213,145 +213,56 @@ describe('token-burden extension entrypoint', () => {
     expect(mockRunTokenBurden).toHaveBeenLastCalledWith(pi, 'second', ctx);
   });
 
-  it('defers Atelier measurement until after discovery returns', async () => {
-    const { bus, handlers } = await setupExtension();
-    const ctx = createContext('discovery prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
+  it('advertises the Atelier panel without loading the measurement module', async () => {
+    const { bus } = await setupExtension();
 
     bus.discover('structural-discovery');
+    await flushAsync();
 
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
     expect(evaluations.measureTokenBudget).toBe(0);
-
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    expect(bus.emitted.at(-1)?.data).toMatchObject({
+      type: 'register',
+      requestId: 'structural-discovery',
+      panel: {
+        id: 'token-burden:budget',
+        rows: [{ text: 'Updates after first turn', role: 'context' }],
+      },
     });
-
-    expect(evaluations.measureTokenBudget).toBe(1);
-    expect(bus.emitted.at(-1)?.data).toMatchObject({ type: 'register' });
   });
 });
 
 describe('Atelier sidebar lifecycle', () => {
-  it('does not measure lifecycle events before Atelier discovery', async () => {
-    const { handlers } = await setupExtension();
+  it('does not measure during discovery or session start', async () => {
+    const { bus, handlers } = await setupExtension();
     const ctx = createContext();
 
+    bus.discover();
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'exact prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
     await flushAsync();
 
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
   });
 
-  it('publishes the current session on discovery', async () => {
-    const { bus, handlers, tools } = await setupExtension();
-    const ctx = createContext('current prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-
-    bus.discover('discover-current');
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-
-    expect(mockMeasureTokenBudget).toHaveBeenCalledWith({
-      prompt: 'current prompt',
-      allTools: tools,
-      activeToolNames: ['read'],
-      modelApi: 'anthropic-messages',
-      modelProvider: 'openrouter',
-    });
-    expect(bus.emitted.at(-1)).toEqual({
-      channel: ATELIER_SIDEBAR_CHANNEL,
-      data: {
-        version: 1,
-        type: 'register',
-        source: 'pi-token-burden',
-        revision: 1,
-        panel: {
-          id: 'token-burden:budget',
-          title: 'Token burden',
-          rows: [{ text: '6 / 10k (0.1%)', role: 'context' }, { text: 'Base prompt 6' }],
-        },
-      },
-    });
-  });
-
-  it('publishes at session start when Atelier was discovered first', async () => {
-    const { bus, handlers } = await setupExtension();
-    const ctx = createContext('late session');
-
-    bus.discover('before-session');
-    await flushAsync();
-    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
-
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-
-    expect(bus.emitted).toHaveLength(1);
-  });
-
-  it('never performs sidebar measurement inside before_agent_start', async () => {
+  it('does not measure inside before_agent_start', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext('initial prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
     bus.discover();
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
 
     const result = getEventHandler(handlers, 'before_agent_start')(
-      { type: 'before_agent_start', systemPrompt: 'new exact prompt' },
+      { type: 'before_agent_start', systemPrompt: 'exact assembled prompt' },
       ctx,
     );
 
     expect(result).toBeUndefined();
-    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
-
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it('reuses the previous measurement when prompt, tools, and model are unchanged', async () => {
-    const { bus, handlers } = await setupExtension();
-    const ctx = createContext('same prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-    bus.discover();
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
-
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'same prompt' },
-      ctx,
-    );
     await flushAsync();
-
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
   });
 
-  it('remeasures when the assembled prompt changes', async () => {
+  it('measures after assistant response activity begins', async () => {
     const { bus, handlers, tools } = await setupExtension();
     const ctx = createContext('stale prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
     bus.discover();
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
 
     runEvent(
       handlers,
@@ -359,6 +270,14 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'exact assembled prompt' },
       ctx,
     );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
+
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -370,20 +289,167 @@ describe('Atelier sidebar lifecycle', () => {
       modelApi: 'anthropic-messages',
       modelProvider: 'openrouter',
     });
+    expect(bus.emitted.at(-1)?.data).toMatchObject({
+      type: 'register',
+      panel: {
+        rows: [{ text: '6 / 10k (0.1%)', role: 'context' }, { text: 'Base prompt 6' }],
+      },
+    });
   });
 
-  it('refreshes after model selection', async () => {
+  it('uses assistant message_end as a fallback when there are no updates', async () => {
     const { bus, handlers } = await setupExtension();
-    const ctx = createContext('model prompt');
-    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-
+    const ctx = createContext();
     bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'fallback prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_end',
+      { type: 'message_end', message: { role: 'assistant' } },
+      ctx,
+    );
+
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('ignores user message_end while a sidebar refresh is pending', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'pending prompt' },
+      ctx,
+    );
+    runEvent(handlers, 'message_end', { type: 'message_end', message: { role: 'user' } }, ctx);
+    await flushAsync();
+
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+  });
+
+  it('reuses the previous measurement when prompt, tools, and model are unchanged', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext('same prompt');
+    bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'same prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+    mockMeasureTokenBudget.mockClear();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'same prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
+    await flushAsync();
+
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+  });
+
+  it('remeasures when the assembled prompt changes', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'first prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+    mockMeasureTokenBudget.mockClear();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'second prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('invalidates the cache after model selection', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext('same prompt');
+    bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'same prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
     mockMeasureTokenBudget.mockClear();
 
     runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'same prompt' },
+      ctx,
+    );
+    runEvent(
+      handlers,
+      'message_update',
+      { type: 'message_update', message: { role: 'assistant' } },
+      ctx,
+    );
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
