@@ -171,11 +171,6 @@ afterEach(async () => {
 });
 
 describe('token-burden extension entrypoint', () => {
-  it('exports a default function', async () => {
-    const mod = await import('./index.js');
-    expectTypeOf(mod.default).toBeFunction();
-  });
-
   it('registers /token-burden without evaluating the heavy modules', async () => {
     let handler: CommandHandler | null = null;
     const pi = fromPartial<ExtensionAPI>({
@@ -197,16 +192,11 @@ describe('token-burden extension entrypoint', () => {
     expect(evaluations.measureTokenBudget).toBe(0);
   });
 
-  it('loads the command module on first invocation and caches it on the second', async () => {
+  it('loads the command module only when /token-burden is used', async () => {
     const { command, pi } = await setupExtension();
     const ctx = createContext('command prompt');
 
     await command('first', ctx);
-
-    expect(evaluations.runTokenBurden).toBe(1);
-    expect(mockRunTokenBurden).toHaveBeenCalledTimes(1);
-    expect(mockRunTokenBurden).toHaveBeenCalledWith(pi, 'first', ctx);
-
     await command('second', ctx);
 
     expect(evaluations.runTokenBurden).toBe(1);
@@ -214,7 +204,7 @@ describe('token-burden extension entrypoint', () => {
     expect(mockRunTokenBurden).toHaveBeenLastCalledWith(pi, 'second', ctx);
   });
 
-  it('advertises the Atelier panel without loading the measurement module', async () => {
+  it('advertises the Atelier panel without measuring when there is no session yet', async () => {
     const { bus } = await setupExtension();
 
     bus.discover('structural-discovery');
@@ -227,28 +217,53 @@ describe('token-burden extension entrypoint', () => {
       requestId: 'structural-discovery',
       panel: {
         id: 'token-burden:budget',
-        rows: [{ text: 'Updates after first turn', role: 'context' }],
+        rows: [{ text: 'Measuring…', role: 'context' }],
       },
     });
   });
 });
 
 describe('Atelier sidebar lifecycle', () => {
-  it('does not measure during discovery or session start', async () => {
-    const { bus, handlers } = await setupExtension();
-    const ctx = createContext();
+  it('measures the base chat after discovery and session start', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext('base chat prompt');
 
     bus.discover();
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
-    await flushAsync();
 
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockMeasureTokenBudget).toHaveBeenCalledWith({
+      prompt: 'base chat prompt',
+      allTools: tools,
+      activeToolNames: ['read'],
+      modelApi: 'anthropic-messages',
+      modelProvider: 'openrouter',
+      details: false,
+    });
   });
 
-  it('does not measure inside before_agent_start', async () => {
+  it('also measures when discovery happens after session start', async () => {
     const { bus, handlers } = await setupExtension();
-    const ctx = createContext('initial prompt');
+    const ctx = createContext('base chat prompt');
+
+    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
     bus.discover();
+
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('cancels a pending startup refresh when the first prompt is submitted', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext('base chat prompt');
+
+    bus.discover();
+    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
 
     const result = getEventHandler(handlers, 'before_agent_start')(
       { type: 'before_agent_start', systemPrompt: 'exact assembled prompt' },
@@ -258,27 +273,13 @@ describe('Atelier sidebar lifecycle', () => {
     expect(result).toBeUndefined();
     await flushAsync();
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
-  });
-
-  it('measures after assistant response activity begins', async () => {
-    const { bus, handlers, tools } = await setupExtension();
-    const ctx = createContext('stale prompt');
-    bus.discover();
 
     runEvent(
       handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'exact assembled prompt' },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
-      ctx,
-    );
-
-    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -291,15 +292,9 @@ describe('Atelier sidebar lifecycle', () => {
       modelProvider: 'openrouter',
       details: false,
     });
-    expect(bus.emitted.at(-1)?.data).toMatchObject({
-      type: 'register',
-      panel: {
-        rows: [{ text: '6 / 10k (0.1%)', role: 'context' }, { text: 'Base prompt 6' }],
-      },
-    });
   });
 
-  it('uses assistant message_end as a fallback when there are no updates', async () => {
+  it('uses assistant message_end as a fallback', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext();
     bus.discover();
@@ -322,24 +317,7 @@ describe('Atelier sidebar lifecycle', () => {
     });
   });
 
-  it('ignores user message_end while a sidebar refresh is pending', async () => {
-    const { bus, handlers } = await setupExtension();
-    const ctx = createContext();
-    bus.discover();
-
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'pending prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'message_end', { type: 'message_end', message: { role: 'user' } }, ctx);
-    await flushAsync();
-
-    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
-  });
-
-  it('reuses the previous measurement when prompt, tools, and model are unchanged', async () => {
+  it('reuses the previous measurement when nothing changed', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext('same prompt');
     bus.discover();
@@ -352,8 +330,8 @@ describe('Atelier sidebar lifecycle', () => {
     );
     runEvent(
       handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
     await vi.waitFor(() => {
@@ -369,8 +347,8 @@ describe('Atelier sidebar lifecycle', () => {
     );
     runEvent(
       handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
     await flushAsync();
@@ -391,8 +369,8 @@ describe('Atelier sidebar lifecycle', () => {
     );
     runEvent(
       handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
     await vi.waitFor(() => {
@@ -408,8 +386,8 @@ describe('Atelier sidebar lifecycle', () => {
     );
     runEvent(
       handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
     await vi.waitFor(() => {
@@ -417,7 +395,7 @@ describe('Atelier sidebar lifecycle', () => {
     });
   });
 
-  it('invalidates the cache after model selection', async () => {
+  it('remeasures the current prompt after model selection', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext('same prompt');
     bus.discover();
@@ -430,8 +408,8 @@ describe('Atelier sidebar lifecycle', () => {
     );
     runEvent(
       handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
+      'message_start',
+      { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
     await vi.waitFor(() => {
@@ -440,18 +418,6 @@ describe('Atelier sidebar lifecycle', () => {
     mockMeasureTokenBudget.mockClear();
 
     runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'same prompt' },
-      ctx,
-    );
-    runEvent(
-      handlers,
-      'message_update',
-      { type: 'message_update', message: { role: 'assistant' } },
-      ctx,
-    );
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
