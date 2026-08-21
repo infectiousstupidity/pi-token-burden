@@ -1,19 +1,23 @@
-import { buildToolDefinitionsSection, parseSystemPrompt } from './parser.js';
 import { ToolEnvelope } from './enums.js';
+import { buildToolDefinitionsSection, parseSystemPrompt } from './parser.js';
 
 describe('lightweight token budget measurement', () => {
   it('keeps top-level prompt totals without building drill-down data', () => {
-    const prompt = [
+    const basePrompt = [
       'You are an expert coding assistant operating inside pi.',
       '',
       'Pi documentation:',
       '- Always read pi .md files completely',
+    ].join('\n');
+    const projectContext = [
       '',
       '',
       '# Project Context',
       '',
       '## /tmp/AGENTS.md',
       'Keep it simple.',
+    ].join('\n');
+    const skills = [
       '',
       '',
       'The following skills provide specialized instructions for specific tasks.',
@@ -24,9 +28,9 @@ describe('lightweight token budget measurement', () => {
       '    <location>/tmp/testing/SKILL.md</location>',
       '  </skill>',
       '</available_skills>',
-      'Current date: 2026-08-21',
-      'Current working directory: /tmp',
     ].join('\n');
+    const metadata = '\nCurrent date: 2026-08-21\nCurrent working directory: /tmp';
+    const prompt = basePrompt + projectContext + skills + metadata;
 
     const detailed = parseSystemPrompt(prompt);
     const summary = parseSystemPrompt(prompt, { details: false });
