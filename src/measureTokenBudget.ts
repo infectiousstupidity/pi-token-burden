@@ -16,6 +16,7 @@ interface MeasureTokenBudgetInput {
   activeToolNames: string[];
   modelApi?: string;
   modelProvider?: string;
+  details?: boolean;
 }
 
 /** Measure the model-facing prompt and tool schemas into Budget Sections. */
@@ -25,13 +26,13 @@ export function measureTokenBudget({
   activeToolNames,
   modelApi,
   modelProvider,
+  details = true,
 }: MeasureTokenBudgetInput): ParsedPrompt {
-  const parsed = parseSystemPrompt(prompt);
-  const toolSection = buildToolDefinitionsSection(
-    allTools,
-    activeToolNames,
-    toolEnvelopeForModel(modelApi, modelProvider),
-  );
+  const parsed = details ? parseSystemPrompt(prompt) : parseSystemPrompt(prompt, { details: false });
+  const countedEnvelope = toolEnvelopeForModel(modelApi, modelProvider);
+  const toolSection = details
+    ? buildToolDefinitionsSection(allTools, activeToolNames, countedEnvelope)
+    : buildToolDefinitionsSection(allTools, activeToolNames, countedEnvelope, { details: false });
 
   if (toolSection) {
     parsed.sections.push(toolSection);
