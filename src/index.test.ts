@@ -1,3 +1,4 @@
+import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { fromPartial } from '@total-typescript/shoehorn';
 
 import type { ParsedPrompt } from './types.js';
@@ -12,40 +13,36 @@ interface TestContext {
 }
 
 type CommandHandler = (args: string, ctx: TestContext) => Promise<void>;
-type EventHandler = (event: Record<string, unknown>, ctx: TestContext) => void;
+type EventHandler = (event: Record<string, unknown>, ctx: TestContext) => void | Promise<void>;
 
 interface EventBus {
   emit(channel: string, data: unknown): void;
   on(channel: string, handler: (data: unknown) => void): () => void;
 }
 
-interface MeasureTokenBudgetInput {
-  prompt: string;
-  allTools: unknown[];
-  activeToolNames: string[];
-  modelApi?: string;
-  modelProvider?: string;
+interface MeasureForContextModule {
+  measureForContext(pi: ExtensionAPI, ctx: TestContext, prompt: string): ParsedPrompt;
 }
 
-interface MeasureTokenBudgetModule {
-  measureTokenBudget(input: MeasureTokenBudgetInput): ParsedPrompt;
-}
-
-interface ReportViewModule {
-  showReport(...args: unknown[]): Promise<void>;
-}
-
-const MEASURE_TOKEN_BUDGET_MOCK = vi.fn<MeasureTokenBudgetModule['measureTokenBudget']>();
-const SHOW_REPORT_MOCK = vi.fn<ReportViewModule['showReport']>();
-
-vi.mock<MeasureTokenBudgetModule>(import('./measureTokenBudget.js'), () => ({
-  measureTokenBudget: MEASURE_TOKEN_BUDGET_MOCK,
+// Module-evaluation sentinels: each mock factory body runs when the module
+// is evaluated. A static import of either heavy module in index.ts would
+// fire the corresponding sentinel during extension load, which the
+// registration test below forbids.
+const { evaluations, mockRunTokenBurden, mockMeasureForContext } = vi.hoisted(() => ({
+  evaluations: { runTokenBurden: 0, measureTokenBudget: 0 },
+  mockRunTokenBurden: vi.fn(async (): Promise<void> => undefined),
+  mockMeasureForContext: vi.fn<MeasureForContextModule['measureForContext']>(),
 }));
 
-vi.mock<ReportViewModule>(import('./report-view.js'), async (importOriginal) => ({
-  ...(await importOriginal()),
-  showReport: SHOW_REPORT_MOCK,
-}));
+vi.mock('./runTokenBurden.js', () => {
+  evaluations.runTokenBurden += 1;
+  return { runTokenBurden: mockRunTokenBurden };
+});
+
+vi.mock('./measureTokenBudget.js', () => {
+  evaluations.measureTokenBudget += 1;
+  return { measureForContext: mockMeasureForContext };
+});
 
 class FakeEventBus implements EventBus {
   readonly emitted: Array<{ channel: string; data: unknown }> = [];
@@ -89,7 +86,7 @@ async function setupExtension(): Promise<{
   bus: FakeEventBus;
   handlers: Map<string, EventHandler>;
   command: CommandHandler;
-  tools: unknown[];
+  pi: ExtensionAPI;
 }> {
   const bus = new FakeEventBus();
   const handlers = new Map<string, EventHandler>();
@@ -98,7 +95,7 @@ async function setupExtension(): Promise<{
     { name: 'read', description: 'Read files', parameters: {} },
     { name: 'bash', description: 'Run commands', parameters: {} },
   ];
-  const pi = {
+  const pi = fromPartial<ExtensionAPI>({
     events: bus,
     on: vi.fn((event: string, handler: EventHandler) => handlers.set(event, handler)),
     registerCommand: vi.fn((name: string, options: { handler: CommandHandler }) => {
@@ -108,16 +105,16 @@ async function setupExtension(): Promise<{
     }),
     getAllTools: vi.fn(() => tools),
     getActiveTools: vi.fn(() => ['read']),
-  };
+  });
 
   const { default: extension } = await import('./index.js');
-  await extension(fromPartial(pi));
+  await extension(pi);
 
   if (!command) {
     throw new Error('token-burden handler not registered');
   }
 
-  return { bus, handlers, command, tools };
+  return { bus, handlers, command, pi };
 }
 
 function runEvent(
@@ -130,7 +127,14 @@ function runEvent(
   if (!handler) {
     throw new Error(`${eventName} handler not registered`);
   }
-  handler(event, ctx);
+  void handler(event, ctx);
+}
+
+/** Let deferred dynamic imports and async publishes settle. */
+async function flushAsync(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 const measured: ParsedPrompt = {
@@ -140,13 +144,94 @@ const measured: ParsedPrompt = {
   skills: [],
 };
 
-describe('extension', () => {
-  beforeEach(() => {
-    MEASURE_TOKEN_BUDGET_MOCK.mockReset();
-    MEASURE_TOKEN_BUDGET_MOCK.mockReturnValue(measured);
-    SHOW_REPORT_MOCK.mockReset();
+beforeEach(() => {
+  // Fresh module registry per test so the evaluation sentinels measure only
+  // this test's imports, keeping the assertions robust to test ordering.
+  vi.resetModules();
+  evaluations.runTokenBurden = 0;
+  evaluations.measureTokenBudget = 0;
+  mockRunTokenBurden.mockReset();
+  mockMeasureForContext.mockReset();
+  mockMeasureForContext.mockReturnValue(measured);
+});
+
+afterEach(async () => {
+  // Settle any publish started by the previous test before its mocks reset.
+  await flushAsync();
+});
+
+describe('token-burden extension entrypoint', () => {
+  it('exports a default function', async () => {
+    const mod = await import('./index.js');
+    expectTypeOf(mod.default).toBeFunction();
   });
 
+  it('registers /token-burden without evaluating the heavy modules', async () => {
+    let handler: CommandHandler | null = null;
+    const pi = fromPartial<ExtensionAPI>({
+      events: new FakeEventBus(),
+      on: vi.fn(),
+      registerCommand: vi.fn(
+        (name: string, { handler: registeredHandler }: { handler: CommandHandler }) => {
+          expect(name).toBe('token-burden');
+          handler = registeredHandler;
+        },
+      ),
+    });
+
+    const { default: extension } = await import('./index.js');
+    await extension(pi);
+
+    expect(handler).toBeTypeOf('function');
+    expect(evaluations.runTokenBurden).toBe(0);
+    expect(evaluations.measureTokenBudget).toBe(0);
+  });
+
+  it('loads the command module on first invocation and caches it on the second', async () => {
+    const { command, pi } = await setupExtension();
+    const ctx = createContext('command prompt');
+
+    await command('first', ctx);
+
+    expect(evaluations.runTokenBurden).toBe(1);
+    expect(mockRunTokenBurden).toHaveBeenCalledTimes(1);
+    expect(mockRunTokenBurden).toHaveBeenCalledWith(pi, 'first', ctx);
+
+    // ES module cache: a second invocation in the same process reuses the
+    // already-loaded command module.
+    await command('second', ctx);
+
+    expect(evaluations.runTokenBurden).toBe(1);
+    expect(mockRunTokenBurden).toHaveBeenCalledTimes(2);
+    expect(mockRunTokenBurden).toHaveBeenLastCalledWith(pi, 'second', ctx);
+  });
+
+  it('loads the measurement module on Atelier discovery and registers the panel', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext('discovery prompt');
+    runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
+
+    bus.discover('structural-discovery');
+    // The first cold dynamic import can take more than one macrotask tick,
+    // so poll for the settled end state instead of a fixed flush.
+    await vi.waitFor(() => {
+      expect(bus.emitted.at(-1)?.data).toMatchObject({
+        type: 'register',
+        requestId: 'structural-discovery',
+      });
+    });
+
+    expect(evaluations.measureTokenBudget).toBe(1);
+    const last = bus.emitted.at(-1);
+    expect(last?.channel).toBe(ATELIER_SIDEBAR_CHANNEL);
+    expect(last?.data).toMatchObject({
+      type: 'register',
+      requestId: 'structural-discovery',
+    });
+  });
+});
+
+describe('Atelier sidebar lifecycle', () => {
   it('does not measure lifecycle events before Atelier discovery', async () => {
     const { handlers } = await setupExtension();
     const ctx = createContext();
@@ -159,24 +244,22 @@ describe('extension', () => {
       ctx,
     );
     runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
+    await flushAsync();
 
-    expect(MEASURE_TOKEN_BUDGET_MOCK).not.toHaveBeenCalled();
+    expect(mockMeasureForContext).not.toHaveBeenCalled();
   });
 
   it('publishes the current session on discovery', async () => {
-    const { bus, handlers, tools } = await setupExtension();
+    const { bus, handlers, pi } = await setupExtension();
     const ctx = createContext('current prompt');
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
 
     bus.discover('discover-current');
-
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledWith({
-      prompt: 'current prompt',
-      allTools: tools,
-      activeToolNames: ['read'],
-      modelApi: 'anthropic-messages',
-      modelProvider: 'openrouter',
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
     });
+
+    expect(mockMeasureForContext).toHaveBeenCalledWith(pi, ctx, 'current prompt');
     expect(bus.emitted.at(-1)).toEqual({
       channel: ATELIER_SIDEBAR_CHANNEL,
       data: {
@@ -195,26 +278,31 @@ describe('extension', () => {
   });
 
   it('publishes at session start when Atelier was discovered first', async () => {
-    const { bus, handlers } = await setupExtension();
+    const { bus, handlers, pi } = await setupExtension();
     const ctx = createContext('late session');
 
     bus.discover('before-session');
-    expect(MEASURE_TOKEN_BUDGET_MOCK).not.toHaveBeenCalled();
+    await flushAsync();
+    expect(mockMeasureForContext).not.toHaveBeenCalled();
 
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
+    });
 
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: 'late session' }),
-    );
+    expect(mockMeasureForContext).toHaveBeenCalledWith(pi, ctx, 'late session');
     expect(bus.emitted).toHaveLength(1);
   });
 
   it('refreshes before agent start from the exact event system prompt', async () => {
-    const { bus, handlers } = await setupExtension();
+    const { bus, handlers, pi } = await setupExtension();
     const ctx = createContext('stale prompt');
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
     bus.discover();
-    MEASURE_TOKEN_BUDGET_MOCK.mockClear();
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
+    });
+    mockMeasureForContext.mockClear();
 
     runEvent(
       handlers,
@@ -222,58 +310,34 @@ describe('extension', () => {
       { type: 'before_agent_start', systemPrompt: 'exact assembled prompt' },
       ctx,
     );
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
+    });
 
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledOnce();
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: 'exact assembled prompt' }),
-    );
+    expect(mockMeasureForContext).toHaveBeenCalledOnce();
+    expect(mockMeasureForContext).toHaveBeenCalledWith(pi, ctx, 'exact assembled prompt');
   });
 
   it('refreshes on model select only after Atelier discovery', async () => {
-    const { bus, handlers } = await setupExtension();
+    const { bus, handlers, pi } = await setupExtension();
     const ctx = createContext('model prompt');
     runEvent(handlers, 'session_start', { type: 'session_start' }, ctx);
 
     runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
-    expect(MEASURE_TOKEN_BUDGET_MOCK).not.toHaveBeenCalled();
+    await flushAsync();
+    expect(mockMeasureForContext).not.toHaveBeenCalled();
 
     bus.discover();
-    MEASURE_TOKEN_BUDGET_MOCK.mockClear();
-    runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
-
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledOnce();
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: 'model prompt' }),
-    );
-  });
-
-  it('keeps the token-burden command independent of Atelier discovery', async () => {
-    const { command, tools } = await setupExtension();
-    const ctx = createContext('command prompt');
-
-    await command('', ctx);
-
-    expect(MEASURE_TOKEN_BUDGET_MOCK).toHaveBeenCalledWith({
-      prompt: 'command prompt',
-      allTools: tools,
-      activeToolNames: ['read'],
-      modelApi: 'anthropic-messages',
-      modelProvider: 'openrouter',
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
     });
-    expect(SHOW_REPORT_MOCK).not.toHaveBeenCalled();
-  });
+    mockMeasureForContext.mockClear();
+    runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
+    await vi.waitFor(() => {
+      expect(mockMeasureForContext).toHaveBeenCalledTimes(1);
+    });
 
-  it('still opens the full report overlay without Atelier discovery', async () => {
-    const { command } = await setupExtension();
-    const ctx = { ...createContext('overlay prompt'), hasUI: true };
-
-    await command('', ctx);
-
-    expect(SHOW_REPORT_MOCK).toHaveBeenCalledOnce();
-    expect(SHOW_REPORT_MOCK).toHaveBeenCalledWith(
-      measured,
-      ctx,
-      expect.objectContaining({ contextWindow: 10_000 }),
-    );
+    expect(mockMeasureForContext).toHaveBeenCalledOnce();
+    expect(mockMeasureForContext).toHaveBeenCalledWith(pi, ctx, 'model prompt');
   });
 });

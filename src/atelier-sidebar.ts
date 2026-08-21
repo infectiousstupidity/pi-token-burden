@@ -129,20 +129,39 @@ export class AtelierSidebar {
   readonly panelId = ATELIER_SIDEBAR_PANEL_ID;
   private currentPanel: CurrentPanel | null = null;
   private revision = 0;
+  private disposed = false;
   private readonly unsubscribe: () => void;
 
   constructor(
     private readonly events: EventBus,
-    options: { onDiscover?(requestId: string): void } = {},
+    options: { onDiscover?(requestId: string): void | Promise<void> } = {},
   ) {
     this.unsubscribe = events.on(ATELIER_SIDEBAR_CHANNEL, (data) => {
       if (!isDiscoveryEvent(data)) {
         return;
       }
 
-      options.onDiscover?.(data.requestId);
-      this.emitRegister(data.requestId);
+      const discovery = options.onDiscover?.(data.requestId);
+      if (discovery instanceof Promise) {
+        // Async discovery (e.g. deferred measurement): replay the panel
+        // only after the callback settles.
+        void this.replayAfterDiscovery(discovery, data.requestId);
+      } else {
+        this.emitRegister(data.requestId);
+      }
     });
+  }
+
+  /** Replay the panel once an async discovery callback settles. */
+  private async replayAfterDiscovery(discovery: Promise<void>, requestId: string): Promise<void> {
+    try {
+      await discovery;
+    } catch {
+      // Discovery measurement failed; no panel to replay. Swallowed
+      // because console is disallowed by the project lint config.
+      return;
+    }
+    this.emitRegister(requestId);
   }
 
   update(rows: readonly AtelierSidebarRow[]): void {
@@ -171,11 +190,12 @@ export class AtelierSidebar {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.unsubscribe();
   }
 
   private emitRegister(requestId?: string): void {
-    if (this.currentPanel === null) {
+    if (this.disposed || this.currentPanel === null) {
       return;
     }
 
