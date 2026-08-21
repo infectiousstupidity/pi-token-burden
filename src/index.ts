@@ -73,7 +73,6 @@ const EXTENSION: ExtensionFactory = (pi) => {
         activeToolNames,
         modelApi,
         modelProvider,
-        details: false,
       });
       measurementCache = {
         prompt,
