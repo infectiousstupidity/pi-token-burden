@@ -28,6 +28,14 @@ interface ToolDefinition {
 }
 
 interface MeasureTokenBudgetModule {
+  buildSidebarMeasurementKey(input: {
+    prompt: string;
+    allTools: ToolDefinition[];
+    activeToolNames: string[];
+    modelApi?: string;
+    modelProvider?: string;
+    details?: boolean;
+  }): string;
   measureTokenBudget(input: {
     prompt: string;
     allTools: ToolDefinition[];
@@ -49,9 +57,10 @@ vi.mock('./runTokenBurden.js', () => {
   return { runTokenBurden: mockRunTokenBurden };
 });
 
-vi.mock('./measureTokenBudget.js', () => {
+vi.mock('./measureTokenBudget.js', async (importOriginal) => {
   evaluations.measureTokenBudget += 1;
-  return { measureTokenBudget: mockMeasureTokenBudget };
+  const original = await importOriginal<MeasureTokenBudgetModule>();
+  return { ...original, measureTokenBudget: mockMeasureTokenBudget };
 });
 
 class FakeEventBus implements EventBus {
@@ -99,6 +108,7 @@ async function setupExtension(): Promise<{
   command: CommandHandler;
   pi: ExtensionAPI;
   tools: ToolDefinition[];
+  activeToolNames: string[];
 }> {
   const bus = new FakeEventBus();
   const handlers = new Map<string, EventHandler>();
@@ -107,6 +117,7 @@ async function setupExtension(): Promise<{
     { name: 'read', description: 'Read files', parameters: {} },
     { name: 'bash', description: 'Run commands', parameters: {} },
   ];
+  const activeToolNames = ['read'];
   const pi = fromPartial<ExtensionAPI>({
     events: bus,
     on: vi.fn((event: string, handler: EventHandler) => handlers.set(event, handler)),
@@ -116,7 +127,7 @@ async function setupExtension(): Promise<{
       }
     }),
     getAllTools: vi.fn(() => tools),
-    getActiveTools: vi.fn(() => ['read']),
+    getActiveTools: vi.fn(() => activeToolNames),
   });
 
   const { default: extension } = await import('./index.js');
@@ -126,7 +137,7 @@ async function setupExtension(): Promise<{
     throw new Error('token-burden handler not registered');
   }
 
-  return { bus, handlers, command, pi, tools };
+  return { bus, handlers, command, pi, tools, activeToolNames };
 }
 
 function getEventHandler(handlers: Map<string, EventHandler>, eventName: string): EventHandler {
@@ -153,6 +164,23 @@ function runOptionalEvent(
   ctx: TestContext,
 ): void {
   void handlers.get(eventName)?.(event, ctx);
+}
+
+async function measureSettledPrompt(
+  handlers: Map<string, EventHandler>,
+  ctx: TestContext,
+  prompt: string,
+  expectedCalls: number,
+): Promise<void> {
+  runEvent(
+    handlers,
+    'before_agent_start',
+    { type: 'before_agent_start', systemPrompt: prompt },
+    ctx,
+  );
+  runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
+  await flushAsync();
+  expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(expectedCalls);
 }
 
 async function flushAsync(): Promise<void> {
@@ -408,33 +436,122 @@ describe('Atelier sidebar lifecycle', () => {
     });
   });
 
-  it('reuses the previous measurement when nothing changed', async () => {
+  it('reuses the previous measurement with the same schema object', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext('same prompt');
     bus.discover();
 
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'same prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+  });
 
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'same prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
-    await flushAsync();
+  it('reuses the previous measurement with a reconstructed equivalent schema', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    tools[0] = {
+      name: 'read',
+      description: 'Read files',
+      parameters: { required: ['path'], properties: { path: { type: 'string' } } },
+    };
+    bus.discover();
 
-    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    tools[0] = {
+      name: 'read',
+      description: 'Read files',
+      parameters: { properties: { path: { type: 'string' } }, required: ['path'] },
+    };
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+  });
+
+  it('remeasures when the cached schema object is mutated in place', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    const parameters = { properties: { path: { type: 'string' } } };
+    tools[0] = { name: 'read', description: 'Read files', parameters };
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    parameters.properties.path.type = 'number';
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
+  });
+
+  it('reuses the previous measurement when active tool names are reordered', async () => {
+    const { activeToolNames, bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    activeToolNames.push('bash');
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    activeToolNames.reverse();
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+  });
+
+  it('remeasures when active tool membership changes', async () => {
+    const { activeToolNames, bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    activeToolNames.push('bash');
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
+  });
+
+  it('remeasures when an active tool description changes', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    tools[0] = { name: 'read', description: 'Read file contents', parameters: {} };
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
+  });
+
+  it('remeasures when active tool parameters change', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    tools[0] = { name: 'read', description: 'Read files', parameters: { type: 'object' } };
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
+  });
+
+  it('ignores changes to inactive tool schemas', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    tools[1] = {
+      name: 'bash',
+      description: 'Execute shell commands',
+      parameters: { type: 'object' },
+    };
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+  });
+
+  it('remeasures when the tool inventory changes between empty and nonempty', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext();
+    tools.splice(0);
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    tools.push({ name: 'bash', description: 'Run commands', parameters: {} });
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
+  });
+
+  it('remeasures when the effective provider envelope changes', async () => {
+    const { bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    bus.discover();
+
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    if (ctx.model) {
+      ctx.model.api = 'openai-responses';
+    }
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 2);
   });
 
   it('remeasures when the assembled prompt changes', async () => {
@@ -442,50 +559,22 @@ describe('Atelier sidebar lifecycle', () => {
     const ctx = createContext();
     bus.discover();
 
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'first prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
-
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'second prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
+    await measureSettledPrompt(handlers, ctx, 'first prompt', 1);
+    await measureSettledPrompt(handlers, ctx, 'second prompt', 2);
   });
 
-  it('remeasures the current prompt after model selection', async () => {
+  it('remeasures the current prompt after selecting a different model envelope', async () => {
     const { bus, handlers } = await setupExtension();
     const ctx = createContext('same prompt');
     bus.discover();
 
-    runEvent(
-      handlers,
-      'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'same prompt' },
-      ctx,
-    );
-    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
-    await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
-    });
-    mockMeasureTokenBudget.mockClear();
-
+    await measureSettledPrompt(handlers, ctx, 'same prompt', 1);
+    if (ctx.model) {
+      ctx.model.api = 'openai-responses';
+    }
     runEvent(handlers, 'model_select', { type: 'model_select' }, ctx);
     await vi.waitFor(() => {
-      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(2);
     });
   });
 });
