@@ -231,9 +231,21 @@ describe('token-burden extension entrypoint', () => {
     expect(evaluations.measureTokenBudget).toBe(0);
   });
 
-  it('loads the command module only when /token-burden is used', async () => {
+  it('exits a headless /token-burden invocation before loading or measuring', async () => {
+    const { command } = await setupExtension();
+    const ctx = createContext('command prompt');
+
+    await command('', ctx);
+
+    expect(evaluations.runTokenBurden).toBe(0);
+    expect(evaluations.measureTokenBudget).toBe(0);
+    expect(mockRunTokenBurden).not.toHaveBeenCalled();
+  });
+
+  it('loads the command module only when /token-burden is used with UI', async () => {
     const { command, pi } = await setupExtension();
     const ctx = createContext('command prompt');
+    ctx.hasUI = true;
 
     await command('first', ctx);
     await command('second', ctx);

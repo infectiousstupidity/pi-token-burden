@@ -1,8 +1,18 @@
 import { fromPartial } from '@total-typescript/shoehorn';
 
+import type { BasePromptTraceResult } from './base-trace/index.js';
 import { DisableMode } from './enums.js';
 import { getEditor, isReadOnlySection, showReport } from './report-view.js';
 import type { ParsedPrompt, SkillInfo } from './types.js';
+
+const { optionalModuleEvaluations } = vi.hoisted(() => ({
+  optionalModuleEvaluations: { count: 0 },
+}));
+
+vi.mock('./source-trace-report-cache.js', async (importOriginal) => {
+  optionalModuleEvaluations.count += 1;
+  return importOriginal();
+});
 
 describe('report-view', () => {
   it('exports showReport function', () => {
@@ -38,6 +48,7 @@ async function mountOverlayWithTui(
   parsed: ParsedPrompt,
   discoveredSkills: SkillInfo[] = [],
   contextWindow?: number,
+  onRunTrace?: () => Promise<BasePromptTraceResult>,
 ): Promise<MountedOverlay> {
   let component: OverlayComponent | undefined;
   let tui: MockTui | undefined;
@@ -58,6 +69,7 @@ async function mountOverlayWithTui(
   await showReport(parsed, fromPartial(ctx), {
     contextWindow,
     discoveredSkills,
+    onRunTrace,
   });
 
   if (!component) {
@@ -146,6 +158,86 @@ describe('showReport — rendering', () => {
     const text = overlay.render(120).join('\n');
 
     expect(text).toContain('Skills (0)');
+  });
+});
+
+describe('showReport — Source Trace', () => {
+  const parsed: ParsedPrompt = {
+    sections: [{ label: 'Base prompt', chars: 11, tokens: 4, content: 'base prompt' }],
+    totalChars: 11,
+    totalTokens: 4,
+    skills: [],
+  };
+  const traceResult: BasePromptTraceResult = {
+    fingerprint: 'trace-a',
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    baseTokens: 4,
+    buckets: [],
+    evidence: [],
+    errors: [],
+  };
+
+  it('loads optional report modules on demand and reuses the cached trace', async () => {
+    const onRunTrace = vi.fn(async () => traceResult);
+    const initialEvaluations = optionalModuleEvaluations.count;
+    const { overlay } = await mountOverlayWithTui(parsed, [], undefined, onRunTrace);
+
+    overlay.render(120);
+    expect(optionalModuleEvaluations.count).toBe(initialEvaluations);
+
+    overlay.handleInput('t');
+    await vi.waitFor(() => {
+      expect(onRunTrace).toHaveBeenCalledTimes(1);
+    });
+    expect(optionalModuleEvaluations.count).toBe(initialEvaluations + 1);
+
+    overlay.handleInput('\u001B');
+    overlay.handleInput('t');
+    await vi.waitFor(() => {
+      expect(overlay.render(120).join('\n')).toContain('Trace complete');
+    });
+    expect(onRunTrace).toHaveBeenCalledTimes(1);
+    expect(optionalModuleEvaluations.count).toBe(initialEvaluations + 1);
+  });
+
+  it('contains an optional Source Trace failure and returns to the report', async () => {
+    const onRunTrace = vi.fn(async (): Promise<BasePromptTraceResult> => {
+      throw new Error('trace failed');
+    });
+    const { overlay } = await mountOverlayWithTui(parsed, [], undefined, onRunTrace);
+
+    overlay.handleInput('t');
+    await vi.waitFor(() => {
+      expect(onRunTrace).toHaveBeenCalledTimes(1);
+      expect(overlay.render(120).join('\n')).toContain('Base prompt');
+    });
+  });
+
+  it('retries analysis after a failed refresh instead of restoring stale cached data', async () => {
+    const refreshedResult = { ...traceResult, fingerprint: 'trace-b' };
+    const onRunTrace = vi
+      .fn<() => Promise<BasePromptTraceResult>>()
+      .mockResolvedValueOnce(traceResult)
+      .mockRejectedValueOnce(new Error('refresh failed'))
+      .mockResolvedValueOnce(refreshedResult);
+    const { overlay } = await mountOverlayWithTui(parsed, [], undefined, onRunTrace);
+
+    overlay.handleInput('t');
+    await vi.waitFor(() => {
+      expect(overlay.render(120).join('\n')).toContain('Trace complete');
+    });
+
+    overlay.handleInput('r');
+    await vi.waitFor(() => {
+      expect(onRunTrace).toHaveBeenCalledTimes(2);
+      expect(overlay.render(120).join('\n')).toContain('Base prompt');
+    });
+
+    overlay.handleInput('t');
+    await vi.waitFor(() => {
+      expect(onRunTrace).toHaveBeenCalledTimes(3);
+      expect(overlay.render(120).join('\n')).toContain('Trace complete');
+    });
   });
 });
 

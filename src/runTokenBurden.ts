@@ -1,13 +1,10 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { discoverAndLoadExtensions, SettingsManager } from '@mariozechner/pi-coding-agent';
 import type { ExtensionAPI, ExtensionCommandContext } from '@mariozechner/pi-coding-agent';
 
-import { attributeBasePrompt, extractBaseLines, extractContributions } from './base-trace/index.js';
 import type { BasePromptTraceResult } from './base-trace/index.js';
 import { measureForContext } from './measureTokenBudget.js';
-import { estimateTokens } from './parser.js';
 import { showReport } from './report-view.js';
 import { saveSkillToggleResult } from './saveSkillToggleResult.js';
 import { SkillVisibilityStore, loadSettings } from './skill-visibility-store.js';
@@ -42,14 +39,14 @@ export async function runTokenBurden(
   _args: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
+  if (!ctx.hasUI) {
+    return;
+  }
+
   const parsed = measureForContext(pi, ctx, ctx.getSystemPrompt());
 
   const usage = ctx.getContextUsage();
   const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
-
-  if (!ctx.hasUI) {
-    return;
-  }
 
   const agentDir = getAgentDir();
   const settingsPath = path.join(agentDir, 'settings.json');
@@ -58,6 +55,15 @@ export async function runTokenBurden(
   const { skills, byName } = loadAllSkills(settings, undefined, agentDir);
 
   const onRunTrace = async (): Promise<BasePromptTraceResult> => {
+    const [
+      { discoverAndLoadExtensions, SettingsManager },
+      { attributeBasePrompt, extractBaseLines, extractContributions },
+      { estimateTokens },
+    ] = await Promise.all([
+      import('@mariozechner/pi-coding-agent'),
+      import('./base-trace/index.js'),
+      import('./parser.js'),
+    ]);
     const sm = SettingsManager.create(process.cwd(), agentDir);
     const configuredPaths = sm.getExtensionPaths();
     const { extensions, errors: loadErrors } = await discoverAndLoadExtensions(

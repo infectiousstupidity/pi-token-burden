@@ -18,7 +18,7 @@ import {
   reconcileSkillsWithPrompt,
   SkillManagementSession,
 } from './skill-management-session.js';
-import { SourceTraceReportCache } from './source-trace-report-cache.js';
+import type { SourceTraceReportCache } from './source-trace-report-cache.js';
 import type { SourceTraceReport } from './source-trace-report.js';
 import type { ParsedPrompt, SkillInfo, SkillToggleResult, TableItem, ToolEntry } from './types.js';
 import { buildBarSegments, fuzzyFilter, getRequiredItem } from './utils.js';
@@ -312,7 +312,7 @@ class BudgetOverlay {
   private readonly tui: TUI;
   private readonly done: (value: null) => void;
   private readonly onToggleResult?: (result: SkillToggleResult) => boolean;
-  private readonly traceCache = new SourceTraceReportCache();
+  private traceCache?: SourceTraceReportCache;
   private readonly onRunTrace?: () => Promise<BasePromptTraceResult>;
 
   private cachedWidth?: number;
@@ -887,7 +887,7 @@ class BudgetOverlay {
     }
 
     if (data === 'r') {
-      this.traceCache.clear();
+      this.traceCache?.clear();
       void this.runTrace({ refresh: true });
       return;
     }
@@ -950,6 +950,10 @@ class BudgetOverlay {
     this.invalidate();
 
     try {
+      if (!this.traceCache) {
+        const { SourceTraceReportCache } = await import('./source-trace-report-cache.js');
+        this.traceCache = new SourceTraceReportCache();
+      }
       this.state.traceReport = await this.traceCache.getOrLoad(this.onRunTrace, options);
       this.state.traceLoading = false;
       this.state.selectedIndex = 0;

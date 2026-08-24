@@ -25,6 +25,12 @@ interface ShowReportOptions {
 }
 
 const {
+  evaluations,
+  mockAttributeBasePrompt,
+  mockDiscoverAndLoadExtensions,
+  mockExtractBaseLines,
+  mockExtractContributions,
+  mockGetExtensionPaths,
   mockMeasureForContext,
   mockEstimateTokens,
   mockShowReport,
@@ -33,6 +39,12 @@ const {
   mockSaveSkillToggleResult,
   mockSkillVisibilityStore,
 } = vi.hoisted(() => ({
+  evaluations: { baseTrace: 0, parser: 0, piExtensionDiscovery: 0 },
+  mockAttributeBasePrompt: vi.fn(),
+  mockDiscoverAndLoadExtensions: vi.fn(),
+  mockExtractBaseLines: vi.fn(),
+  mockExtractContributions: vi.fn(),
+  mockGetExtensionPaths: vi.fn(),
   mockMeasureForContext: vi.fn<MeasureForContextModule['measureForContext']>(),
   mockEstimateTokens: vi.fn<(text: string) => number>(),
   mockShowReport:
@@ -64,13 +76,33 @@ const {
   mockSkillVisibilityStore: vi.fn(),
 }));
 
+vi.mock('@mariozechner/pi-coding-agent', () => {
+  evaluations.piExtensionDiscovery += 1;
+  return {
+    discoverAndLoadExtensions: mockDiscoverAndLoadExtensions,
+    SettingsManager: {
+      create: () => ({ getExtensionPaths: mockGetExtensionPaths }),
+    },
+  };
+});
+
+vi.mock('./base-trace/index.js', () => {
+  evaluations.baseTrace += 1;
+  return {
+    attributeBasePrompt: mockAttributeBasePrompt,
+    extractBaseLines: mockExtractBaseLines,
+    extractContributions: mockExtractContributions,
+  };
+});
+
 vi.mock('./measureTokenBudget.js', () => ({
   measureForContext: mockMeasureForContext,
 }));
 
-vi.mock('./parser.js', () => ({
-  estimateTokens: mockEstimateTokens,
-}));
+vi.mock('./parser.js', () => {
+  evaluations.parser += 1;
+  return { estimateTokens: mockEstimateTokens };
+});
 
 vi.mock('./report-view.js', () => ({
   showReport: mockShowReport,
@@ -134,6 +166,9 @@ async function openReport(ctx: ExtensionCommandContext): Promise<ShowReportOptio
 describe('runTokenBurden', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    evaluations.baseTrace = 0;
+    evaluations.parser = 0;
+    evaluations.piExtensionDiscovery = 0;
     mockMeasureForContext.mockReturnValue({
       sections: [],
       totalChars: 0,
@@ -142,9 +177,18 @@ describe('runTokenBurden', () => {
     });
     mockLoadSettings.mockReturnValue({});
     mockLoadAllSkills.mockReturnValue({ skills: [], byName: new Map() });
+    mockGetExtensionPaths.mockReturnValue(['/extensions/demo.ts']);
+    mockDiscoverAndLoadExtensions.mockResolvedValue({
+      extensions: [{ path: '/extensions/demo.ts', tools: new Map() }],
+      errors: [],
+    });
+    mockExtractContributions.mockReturnValue([]);
+    mockExtractBaseLines.mockReturnValue({ toolLines: [], guidelineLines: [] });
+    mockEstimateTokens.mockReturnValue(4);
+    mockAttributeBasePrompt.mockReturnValue({ buckets: [], evidence: [] });
   });
 
-  it('delegates measurement to measureForContext with the session prompt', async () => {
+  it('defensively exits before measurement without UI', async () => {
     const pi = fromPartial<ExtensionAPI>({
       getAllTools: () => [],
       getActiveTools: () => ['read'],
@@ -156,7 +200,7 @@ describe('runTokenBurden', () => {
 
     await runTokenBurden(pi, '', ctx);
 
-    expect(mockMeasureForContext).toHaveBeenCalledWith(pi, ctx, 'prompt');
+    expect(mockMeasureForContext).not.toHaveBeenCalled();
   });
 
   it('does not open the report or load skills without UI', async () => {
@@ -191,6 +235,36 @@ describe('runTokenBurden', () => {
     expect(options.discoveredSkills).toEqual([demoSkill]);
     expect(options.onToggleResult).toBeTypeOf('function');
     expect(options.onRunTrace).toBeTypeOf('function');
+    expect(evaluations.baseTrace).toBe(0);
+    expect(evaluations.parser).toBe(0);
+    expect(evaluations.piExtensionDiscovery).toBe(0);
+  });
+
+  it('loads optional Source Trace analysis only when requested', async () => {
+    mockMeasureForContext.mockReturnValue({
+      sections: [{ label: 'Base prompt', chars: 11, tokens: 4, content: 'base prompt' }],
+      totalChars: 11,
+      totalTokens: 4,
+      skills: [],
+    });
+    const options = await openReport(makeContext());
+
+    const result = await options.onRunTrace();
+    await options.onRunTrace();
+
+    expect(result).toMatchObject({ fingerprint: '/extensions/demo.ts', baseTokens: 4 });
+    expect(evaluations.baseTrace).toBe(1);
+    expect(evaluations.parser).toBe(1);
+    expect(evaluations.piExtensionDiscovery).toBe(1);
+    expect(mockDiscoverAndLoadExtensions).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects Source Trace failures without affecting the open report', async () => {
+    mockDiscoverAndLoadExtensions.mockRejectedValueOnce(new Error('extension load failed'));
+    const options = await openReport(makeContext());
+
+    await expect(options.onRunTrace()).rejects.toThrow('extension load failed');
+    expect(mockShowReport).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the model context window when context usage is unavailable', async () => {

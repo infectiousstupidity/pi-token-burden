@@ -172,6 +172,10 @@ const EXTENSION: ExtensionFactory = (pi) => {
   pi.registerCommand('token-burden', {
     description: 'Show token budget breakdown and manage skills',
     handler: async (args, ctx) => {
+      if (!ctx.hasUI) {
+        return;
+      }
+
       const { runTokenBurden } = await import('./runTokenBurden.js');
       await runTokenBurden(pi, args, ctx);
     },
