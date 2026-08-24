@@ -13,6 +13,7 @@ import { buildTableItems, isNonPositivePromptBoundaryReconciliation } from './bu
 import { DisableMode } from './enums.js';
 import {
   applySkillManagementToParsed,
+  buildSkillsBudgetSection,
   ensureSkillsSectionForManagement,
   isSkillsBudgetSectionLabel,
   reconcileSkillsWithPrompt,
@@ -267,6 +268,8 @@ interface OverlayState {
   toolsSection: TableItem | null;
   toolsInactiveExpanded: boolean;
   confirmingDiscard: boolean;
+  skillLoading: boolean;
+  skillLoadError: string | null;
   traceReport: SourceTraceReport | null;
   traceLoading: boolean;
   traceDrilldownBucket: TraceBucket | null;
@@ -281,7 +284,7 @@ interface ToolsRow {
 
 interface ShowReportOptions {
   contextWindow?: number;
-  discoveredSkills?: SkillInfo[];
+  onLoadSkills?: () => Promise<SkillInfo[]>;
   onToggleResult?: (result: SkillToggleResult) => boolean;
   onRunTrace?: () => Promise<BasePromptTraceResult>;
 }
@@ -297,6 +300,8 @@ class BudgetOverlay {
     toolsSection: null,
     toolsInactiveExpanded: false,
     confirmingDiscard: false,
+    skillLoading: false,
+    skillLoadError: null,
     traceReport: null,
     traceLoading: false,
     traceDrilldownBucket: null,
@@ -308,9 +313,12 @@ class BudgetOverlay {
   private originalTotalTokens: number;
   private adjustedTotalTokens: number;
   private readonly contextWindow?: number;
-  private readonly skillSession: SkillManagementSession;
+  private skillSession = new SkillManagementSession([]);
+  private skillInventoryLoaded = false;
+  private skillInventoryPromise?: Promise<void>;
   private readonly tui: TUI;
   private readonly done: (value: null) => void;
+  private readonly onLoadSkills?: () => Promise<SkillInfo[]>;
   private readonly onToggleResult?: (result: SkillToggleResult) => boolean;
   private traceCache?: SourceTraceReportCache;
   private readonly onRunTrace?: () => Promise<BasePromptTraceResult>;
@@ -324,11 +332,11 @@ class BudgetOverlay {
     done: (value: null) => void,
     options: ShowReportOptions,
   ) {
-    const reconciledSkills = reconcileSkillsWithPrompt(
-      options.discoveredSkills ?? [],
-      parsed.skills,
-    );
-    const parsedWithSkillManagement = ensureSkillsSectionForManagement(parsed, reconciledSkills);
+    const parsedWithSkillManagement =
+      options.onLoadSkills &&
+      !parsed.sections.some((section) => isSkillsBudgetSectionLabel(section.label))
+        ? { ...parsed, sections: [...parsed.sections, buildSkillsBudgetSection([])] }
+        : parsed;
 
     this.tui = tui;
     this.parsed = parsedWithSkillManagement;
@@ -339,9 +347,9 @@ class BudgetOverlay {
     this.originalTotalTokens = parsedWithSkillManagement.totalTokens;
     this.adjustedTotalTokens = parsedWithSkillManagement.totalTokens;
     this.contextWindow = options.contextWindow;
-    this.skillSession = new SkillManagementSession(reconciledSkills);
     this.tableItems = buildTableItems(parsedWithSkillManagement);
     this.done = done;
+    this.onLoadSkills = options.onLoadSkills;
     this.onToggleResult = options.onToggleResult;
     this.onRunTrace = options.onRunTrace;
   }
@@ -512,13 +520,14 @@ class BudgetOverlay {
       return;
     }
 
-    if (this.skillSession.canManageSection(selected.label)) {
+    if (isSkillsBudgetSectionLabel(selected.label) && this.onLoadSkills) {
       this.state.mode = 'skill-toggle';
       this.state.selectedIndex = 0;
       this.state.scrollOffset = 0;
       this.state.searchActive = false;
       this.state.searchQuery = '';
       this.invalidate();
+      void this.loadSkillInventory();
       return;
     }
 
@@ -541,6 +550,46 @@ class BudgetOverlay {
     this.state.searchActive = false;
     this.state.searchQuery = '';
     this.invalidate();
+  }
+
+  private loadSkillInventory(): Promise<void> {
+    if (this.skillInventoryLoaded) {
+      return Promise.resolve();
+    }
+    if (this.skillInventoryPromise) {
+      return this.skillInventoryPromise;
+    }
+
+    this.state.skillLoading = true;
+    this.state.skillLoadError = null;
+    this.invalidate();
+    this.skillInventoryPromise = this.discoverSkillInventory();
+    return this.skillInventoryPromise;
+  }
+
+  private async discoverSkillInventory(): Promise<void> {
+    try {
+      const skills = await this.onLoadSkills?.();
+      const reconciledSkills = reconcileSkillsWithPrompt(skills ?? [], this.parsed.skills);
+      this.skillSession = new SkillManagementSession(reconciledSkills);
+      this.parsed = ensureSkillsSectionForManagement(this.parsed, reconciledSkills);
+      this.originalParsed = {
+        ...this.parsed,
+        sections: this.parsed.sections.map((section) => ({ ...section })),
+      };
+      this.originalTotalTokens = this.parsed.totalTokens;
+      this.adjustedTotalTokens = this.parsed.totalTokens;
+      this.tableItems = buildTableItems(this.parsed);
+      this.skillInventoryLoaded = true;
+      this.state.skillLoading = false;
+    } catch (error: unknown) {
+      this.skillInventoryPromise = undefined;
+      this.state.skillLoading = false;
+      this.state.skillLoadError = error instanceof Error ? error.message : String(error);
+    } finally {
+      this.invalidate();
+      this.tui.requestRender(true);
+    }
   }
 
   private getVisibleItems(): TableItem[] {
@@ -1144,6 +1193,19 @@ class BudgetOverlay {
   ): void {
     lines.push(emptyRow());
 
+    if (this.state.skillLoading) {
+      lines.push(centerRow(dim(italic('Loading skill inventory…'))));
+      lines.push(emptyRow());
+      return;
+    }
+
+    if (this.state.skillLoadError) {
+      lines.push(centerRow(sgr('31', `Failed to load skills: ${this.state.skillLoadError}`)));
+      lines.push(centerRow(dim(italic('Press esc to return; enter Skills to retry'))));
+      lines.push(emptyRow());
+      return;
+    }
+
     const { pendingCount } = this.skillSession;
     if (pendingCount > 0) {
       lines.push(
@@ -1471,7 +1533,7 @@ export async function showReport(
   options: ShowReportOptions = {},
 ): Promise<void> {
   await ctx.ui.custom<null>(
-    (tui, theme, kb, done) => {
+    (tui, _theme, _kb, done) => {
       const overlay = new BudgetOverlay(tui, parsed, done, options);
       return {
         render: (width: number) => overlay.render(width),

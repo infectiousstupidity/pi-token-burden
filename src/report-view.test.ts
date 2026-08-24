@@ -68,7 +68,7 @@ async function mountOverlayWithTui(
 
   await showReport(parsed, fromPartial(ctx), {
     contextWindow,
-    discoveredSkills,
+    onLoadSkills: async () => discoveredSkills,
     onRunTrace,
   });
 
@@ -134,7 +134,7 @@ describe('showReport — rendering', () => {
     },
   );
 
-  it('keeps an empty Skills section visible for discovered hidden skills', async () => {
+  it('keeps an empty Skills section visible without eagerly loading hidden skills', async () => {
     const parsed: ParsedPrompt = {
       sections: [
         { label: 'Base prompt', chars: 100, tokens: 25 },
@@ -153,11 +153,204 @@ describe('showReport — rendering', () => {
       tokens: 10,
       hasDuplicates: false,
     };
+    const onLoadSkills = vi.fn(async () => [hiddenSkill]);
+    let component: OverlayComponent | undefined;
+    const ctx = {
+      ui: {
+        custom: vi.fn(async (factory: OverlayFactory) => {
+          component = factory(
+            { requestRender: vi.fn(), stop: vi.fn(), start: vi.fn() },
+            undefined,
+            undefined,
+            vi.fn(),
+          );
+        }),
+      },
+    };
 
-    const overlay = await mountOverlay(parsed, [hiddenSkill]);
-    const text = overlay.render(120).join('\n');
+    await showReport(parsed, fromPartial(ctx), { onLoadSkills });
 
-    expect(text).toContain('Skills (0)');
+    if (!component) {
+      throw new Error('Overlay component was not created');
+    }
+    expect(component.render(120).join('\n')).toContain('Skills (0)');
+    expect(onLoadSkills).not.toHaveBeenCalled();
+  });
+});
+
+describe('showReport — Skill Management', () => {
+  const promptSkill = {
+    name: 'active-skill',
+    description: 'Prompt description',
+    location: '/prompt/active-skill/SKILL.md',
+    chars: 120,
+    tokens: 30,
+  };
+  const parsed: ParsedPrompt = {
+    sections: [
+      {
+        label: 'Skills (1)',
+        chars: 120,
+        tokens: 30,
+        children: [
+          {
+            label: 'active-skill',
+            chars: 120,
+            tokens: 30,
+          },
+        ],
+      },
+    ],
+    totalChars: 120,
+    totalTokens: 30,
+    skills: [promptSkill],
+  };
+  const activeSkill: SkillInfo = {
+    name: 'active-skill',
+    description: 'Filesystem description',
+    filePath: '/filesystem/active-skill/SKILL.md',
+    allPaths: ['/filesystem/active-skill/SKILL.md'],
+    mode: DisableMode.ENABLED,
+    tokens: 10,
+    hasDuplicates: false,
+  };
+
+  it('loads the complete inventory on first entry and reuses it after navigation', async () => {
+    const onLoadSkills = vi.fn(async () => [activeSkill]);
+    let component: OverlayComponent | undefined;
+    const ctx = {
+      ui: {
+        custom: vi.fn(async (factory: OverlayFactory) => {
+          component = factory(
+            { requestRender: vi.fn(), stop: vi.fn(), start: vi.fn() },
+            undefined,
+            undefined,
+            vi.fn(),
+          );
+        }),
+      },
+    };
+
+    await showReport(parsed, fromPartial(ctx), { onLoadSkills });
+
+    if (!component) {
+      throw new Error('Overlay component was not created');
+    }
+    expect(onLoadSkills).not.toHaveBeenCalled();
+
+    component.handleInput('\r');
+    expect(component.render(120).join('\n')).toContain('Loading skill inventory');
+    await vi.waitFor(() => {
+      expect(component?.render(120).join('\n')).toContain('active-skill');
+    });
+
+    component.handleInput('\u001B');
+    component.handleInput('\r');
+    await vi.waitFor(() => {
+      expect(component?.render(120).join('\n')).toContain('active-skill');
+    });
+    expect(onLoadSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves visibility, duplicate, preview, and save behavior after lazy loading', async () => {
+    const hiddenSkill: SkillInfo = {
+      name: 'hidden-skill',
+      description: 'Hidden skill',
+      filePath: '/skills/hidden-skill/SKILL.md',
+      allPaths: ['/skills/hidden-skill/SKILL.md'],
+      mode: DisableMode.HIDDEN,
+      tokens: 20,
+      hasDuplicates: false,
+    };
+    const disabledDuplicate: SkillInfo = {
+      name: 'disabled-duplicate',
+      description: 'Disabled duplicate skill',
+      filePath: '/skills/disabled-duplicate/SKILL.md',
+      allPaths: ['/skills/disabled-duplicate/SKILL.md', '/other/disabled-duplicate/SKILL.md'],
+      mode: DisableMode.DISABLED,
+      tokens: 15,
+      hasDuplicates: true,
+    };
+    const onToggleResult = vi.fn(() => true);
+    let component: OverlayComponent | undefined;
+    const ctx = {
+      ui: {
+        custom: vi.fn(async (factory: OverlayFactory) => {
+          component = factory(
+            { requestRender: vi.fn(), stop: vi.fn(), start: vi.fn() },
+            undefined,
+            undefined,
+            vi.fn(),
+          );
+        }),
+      },
+    };
+
+    await showReport(parsed, fromPartial(ctx), {
+      onLoadSkills: async () => [activeSkill, hiddenSkill, disabledDuplicate],
+      onToggleResult,
+    });
+
+    if (!component) {
+      throw new Error('Overlay component was not created');
+    }
+    component.handleInput('\r');
+    await vi.waitFor(() => {
+      const text = component?.render(120).join('\n') ?? '';
+      expect(text).toContain('active-skill');
+      expect(text).toContain('hidden-skill');
+      expect(text).toContain('disabled-duplicate');
+      expect(text).toContain('duplicates');
+    });
+
+    component.handleInput('\r');
+    expect(component.render(120).join('\n')).toContain('1 pending change');
+    component.handleInput('\u0013');
+
+    expect(onToggleResult).toHaveBeenCalledWith({
+      applied: true,
+      changes: new Map([['active-skill', DisableMode.HIDDEN]]),
+    });
+  });
+
+  it('surfaces discovery failure, keeps the base report usable, and retries on re-entry', async () => {
+    const onLoadSkills = vi
+      .fn<() => Promise<SkillInfo[]>>()
+      .mockRejectedValueOnce(new Error('skill scan failed'))
+      .mockResolvedValueOnce([activeSkill]);
+    let component: OverlayComponent | undefined;
+    const ctx = {
+      ui: {
+        custom: vi.fn(async (factory: OverlayFactory) => {
+          component = factory(
+            { requestRender: vi.fn(), stop: vi.fn(), start: vi.fn() },
+            undefined,
+            undefined,
+            vi.fn(),
+          );
+        }),
+      },
+    };
+
+    await showReport(parsed, fromPartial(ctx), { onLoadSkills });
+
+    if (!component) {
+      throw new Error('Overlay component was not created');
+    }
+    component.handleInput('\r');
+    await vi.waitFor(() => {
+      expect(component?.render(120).join('\n')).toContain(
+        'Failed to load skills: skill scan failed',
+      );
+    });
+
+    component.handleInput('\u001B');
+    expect(component.render(120).join('\n')).toContain('Skills (1)');
+    component.handleInput('\r');
+    await vi.waitFor(() => {
+      expect(component?.render(120).join('\n')).toContain('active-skill');
+    });
+    expect(onLoadSkills).toHaveBeenCalledTimes(2);
   });
 });
 

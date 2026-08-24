@@ -9,6 +9,7 @@ import { showReport } from './report-view.js';
 import { saveSkillToggleResult } from './saveSkillToggleResult.js';
 import { SkillVisibilityStore, loadSettings } from './skill-visibility-store.js';
 import { loadAllSkills } from './skills.js';
+import type { SkillInfo } from './types.js';
 
 /**
  * Resolve the agent directory, matching pi's own resolution logic:
@@ -50,9 +51,31 @@ export async function runTokenBurden(
 
   const agentDir = getAgentDir();
   const settingsPath = path.join(agentDir, 'settings.json');
+  let skillInventory: ReturnType<typeof loadAllSkills> | undefined;
+  let skillInventoryPromise: Promise<SkillInfo[]> | undefined;
+
+  const discoverSkills = async (): Promise<SkillInfo[]> => {
+    try {
+      await Promise.resolve();
+      const settings = loadSettings(settingsPath);
+      skillInventory = loadAllSkills(settings, undefined, agentDir);
+      return skillInventory.skills;
+    } catch (error: unknown) {
+      skillInventoryPromise = undefined;
+      throw error;
+    }
+  };
+
+  const onLoadSkills = (): Promise<SkillInfo[]> => {
+    if (skillInventory) {
+      return Promise.resolve(skillInventory.skills);
+    }
+
+    skillInventoryPromise ??= discoverSkills();
+    return skillInventoryPromise;
+  };
+
   const visibilityStore = new SkillVisibilityStore(settingsPath, agentDir);
-  const settings = loadSettings(settingsPath);
-  const { skills, byName } = loadAllSkills(settings, undefined, agentDir);
 
   const onRunTrace = async (): Promise<BasePromptTraceResult> => {
     const [
@@ -107,10 +130,13 @@ export async function runTokenBurden(
 
   await showReport(parsed, ctx, {
     contextWindow,
-    discoveredSkills: skills,
+    onLoadSkills,
     onToggleResult: (result) => {
       const outcome = saveSkillToggleResult(result, (changes) => {
-        visibilityStore.applyChanges(changes, byName);
+        if (!skillInventory) {
+          throw new Error('Skill inventory is not loaded');
+        }
+        visibilityStore.applyChanges(changes, skillInventory.byName);
       });
 
       if (!outcome.ok) {

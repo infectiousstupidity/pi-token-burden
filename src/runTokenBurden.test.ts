@@ -19,7 +19,7 @@ interface MeasureForContextModule {
 /** Options the command handler passes to showReport. */
 interface ShowReportOptions {
   contextWindow?: number;
-  discoveredSkills?: SkillInfo[];
+  onLoadSkills: () => Promise<SkillInfo[]>;
   onToggleResult: (result: SkillToggleResult) => boolean;
   onRunTrace: () => Promise<BasePromptTraceResult>;
 }
@@ -177,6 +177,9 @@ describe('runTokenBurden', () => {
     });
     mockLoadSettings.mockReturnValue({});
     mockLoadAllSkills.mockReturnValue({ skills: [], byName: new Map() });
+    mockSkillVisibilityStore.mockImplementation(function () {
+      return { applyChanges: vi.fn() };
+    });
     mockGetExtensionPaths.mockReturnValue(['/extensions/demo.ts']);
     mockDiscoverAndLoadExtensions.mockResolvedValue({
       extensions: [{ path: '/extensions/demo.ts', tools: new Map() }],
@@ -214,7 +217,7 @@ describe('runTokenBurden', () => {
     expect(mockLoadAllSkills).not.toHaveBeenCalled();
   });
 
-  it('opens the report with context window, discovered skills, and callbacks', async () => {
+  it('opens the report without discovering skills and provides lazy callbacks', async () => {
     const demoSkill: SkillInfo = {
       name: 'demo',
       description: 'Demo skill',
@@ -232,12 +235,32 @@ describe('runTokenBurden', () => {
     const options = await openReport(makeContext());
 
     expect(options.contextWindow).toBe(200000);
-    expect(options.discoveredSkills).toEqual([demoSkill]);
+    expect(mockLoadSettings).not.toHaveBeenCalled();
+    expect(mockLoadAllSkills).not.toHaveBeenCalled();
+    expect(options.onLoadSkills).toBeTypeOf('function');
     expect(options.onToggleResult).toBeTypeOf('function');
     expect(options.onRunTrace).toBeTypeOf('function');
     expect(evaluations.baseTrace).toBe(0);
     expect(evaluations.parser).toBe(0);
     expect(evaluations.piExtensionDiscovery).toBe(0);
+
+    await expect(options.onLoadSkills()).resolves.toEqual([demoSkill]);
+    await expect(options.onLoadSkills()).resolves.toEqual([demoSkill]);
+    expect(mockLoadSettings).toHaveBeenCalledTimes(1);
+    expect(mockLoadAllSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows skill discovery to retry after a failure', async () => {
+    mockLoadAllSkills.mockImplementationOnce(() => {
+      throw new Error('skill scan failed');
+    });
+    const options = await openReport(makeContext());
+
+    await expect(options.onLoadSkills()).rejects.toThrow('skill scan failed');
+    await expect(options.onLoadSkills()).resolves.toEqual([]);
+
+    expect(mockLoadAllSkills).toHaveBeenCalledTimes(2);
+    expect(mockShowReport).toHaveBeenCalledTimes(1);
   });
 
   it('loads optional Source Trace analysis only when requested', async () => {
@@ -278,24 +301,44 @@ describe('runTokenBurden', () => {
     expect(options.contextWindow).toBe(128000);
   });
 
-  it('notifies when a skill toggle result is saved', async () => {
+  it('saves a skill toggle against the complete lazy-loaded inventory', async () => {
     const notify = vi.fn();
-    mockSaveSkillToggleResult.mockReturnValue({
-      ok: true,
-      saved: true,
-      summary: '1 skill enabled',
+    const duplicateSkill: SkillInfo = {
+      name: 'demo',
+      description: 'Demo skill',
+      filePath: '/skills/demo/SKILL.md',
+      allPaths: ['/skills/demo/SKILL.md', '/other/demo/SKILL.md'],
+      mode: DisableMode.ENABLED,
+      tokens: 10,
+      hasDuplicates: true,
+    };
+    const byName = new Map([['demo', duplicateSkill]]);
+    const applyChanges = vi.fn();
+    mockLoadAllSkills.mockReturnValue({ skills: [duplicateSkill], byName });
+    mockSkillVisibilityStore.mockImplementation(function () {
+      return { applyChanges };
+    });
+    mockSaveSkillToggleResult.mockImplementation((_result, persist) => {
+      persist(new Map([['demo', DisableMode.HIDDEN]]));
+      return {
+        ok: true,
+        saved: true,
+        summary: '1 skill hidden',
+      };
     });
 
     const options = await openReport(makeContext({ ui: { notify } }));
+    await options.onLoadSkills();
 
     const result = options.onToggleResult({
       applied: true,
-      changes: new Map([['demo', DisableMode.ENABLED]]),
+      changes: new Map([['demo', DisableMode.HIDDEN]]),
     });
 
     expect(result).toBe(true);
+    expect(applyChanges).toHaveBeenCalledWith(new Map([['demo', DisableMode.HIDDEN]]), byName);
     expect(notify).toHaveBeenCalledWith(
-      'Skills updated: 1 skill enabled. Use /reload or restart for changes to take effect.',
+      'Skills updated: 1 skill hidden. Use /reload or restart for changes to take effect.',
       'info',
     );
   });
