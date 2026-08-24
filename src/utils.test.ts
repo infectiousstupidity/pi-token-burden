@@ -106,6 +106,19 @@ describe('buildBarSegments()', () => {
     expect(getRequiredItem(segments, 0).width).toBe(50);
   });
 
+  it('does not render signed reconciliation as a negative bar segment', () => {
+    const sections = [
+      { label: 'Base prompt', tokens: 51 },
+      { label: 'Prompt Boundary Overhead', tokens: -1 },
+    ];
+    const segments = buildBarSegments(sections, 20);
+
+    expect(segments).toStrictEqual([
+      { label: 'Base prompt', width: 20 },
+      { label: 'Prompt Boundary Overhead', width: 0 },
+    ]);
+  });
+
   it('handles zero total tokens', () => {
     const sections = [
       { label: 'A', tokens: 0 },

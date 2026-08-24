@@ -45,45 +45,42 @@ interface ParsedSkillEntry extends SkillEntry {
 
 interface MeasurementOptions {
   details?: boolean;
+  countTokens?: (text: string) => number;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers (defined before use to satisfy no-use-before-define)
 // ---------------------------------------------------------------------------
 
-function prefixTokens(prompt: string, end: number, cache: Map<number, number>): number {
-  const cached = cache.get(end);
-  if (cached !== undefined) {
-    return cached;
-  }
-  const tokens = estimateTokens(prompt.slice(0, end));
-  cache.set(end, tokens);
-  return tokens;
-}
-
 function measureSpan(
   label: string,
   prompt: string,
   start: number,
   end: number,
-  cache: Map<number, number>,
+  countTokens: (text: string) => number,
   details: boolean,
 ): PromptSection {
   const text = prompt.slice(start, end);
   return {
     label,
     chars: text.length,
-    tokens: prefixTokens(prompt, end, cache) - prefixTokens(prompt, start, cache),
+    tokens: countTokens(text),
     ...(details ? { content: text } : {}),
   };
 }
 
-function measureLiteralSpan(label: string, prompt: string, start: number, end: number): ChildRow {
+function measureLiteralSpan(
+  label: string,
+  prompt: string,
+  start: number,
+  end: number,
+  countTokens: (text: string) => number,
+): ChildRow {
   const content = prompt.slice(start, end);
   return {
     label,
     chars: content.length,
-    tokens: estimateTokens(content),
+    tokens: countTokens(content),
     content,
   };
 }
@@ -174,7 +171,10 @@ function parseContextFileSpans(contextBlock: string): ContextFileSpan[] {
 }
 
 /** Parse `<skill>` entries from the `<available_skills>` XML block. */
-function parseSkillEntries(xmlBlock: string): ParsedSkillEntry[] {
+function parseSkillEntries(
+  xmlBlock: string,
+  countTokens: (text: string) => number,
+): ParsedSkillEntry[] {
   const entries: ParsedSkillEntry[] = [];
   const skillPattern = /<skill>([\s\S]*?)<\/skill>/g;
   const namePattern = /<name>([\s\S]*?)<\/name>/;
@@ -193,7 +193,7 @@ function parseSkillEntries(xmlBlock: string): ParsedSkillEntry[] {
       description,
       location,
       chars: fullEntry.length,
-      tokens: estimateTokens(fullEntry),
+      tokens: countTokens(fullEntry),
       start: match.index,
       end: match.index + fullEntry.length,
       content: fullEntry,
@@ -257,9 +257,9 @@ function findSkillsSectionEnd(
  */
 export function parseSystemPrompt(prompt: string, options: MeasurementOptions = {}): ParsedPrompt {
   const details = options.details ?? true;
+  const countTokens = options.countTokens ?? estimateTokens;
   const sections: PromptSection[] = [];
   const skills: SkillEntry[] = [];
-  const prefixCache = new Map<number, number>([[0, 0]]);
 
   const projectCtxIdx = findProjectContextStart(prompt);
   const skillsPreambleIdx = prompt.indexOf(
@@ -288,7 +288,7 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
     }
   }
 
-  sections.push(measureSpan('Base prompt', prompt, 0, baseSectionEnd, prefixCache, details));
+  sections.push(measureSpan('Base prompt', prompt, 0, baseSectionEnd, countTokens, details));
 
   if (systemGapStart >= 0 && systemGapEnd >= 0) {
     sections.push(
@@ -297,7 +297,7 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
         prompt,
         systemGapStart,
         systemGapEnd,
-        prefixCache,
+        countTokens,
         details,
       ),
     );
@@ -313,7 +313,7 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
       prompt,
       contextStart,
       contextEnd,
-      prefixCache,
+      countTokens,
       details,
     );
 
@@ -322,13 +322,15 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
     } else {
       const contextBlock = prompt.slice(contextStart, contextEnd);
       const contextFiles = parseContextFileSpans(contextBlock);
-      const children = contextFiles.map((file): ChildRow =>
-        measureLiteralSpan(
-          file.path,
-          prompt,
-          contextStart + file.start,
-          contextStart + file.end,
-        ),
+      const children = contextFiles.map(
+        (file): ChildRow =>
+          measureLiteralSpan(
+            file.path,
+            prompt,
+            contextStart + file.start,
+            contextStart + file.end,
+            countTokens,
+          ),
       );
 
       sections.push({
@@ -349,7 +351,7 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
         availableSkillsStart,
         availableSkillsEnd + '</available_skills>'.length,
       );
-      parsedSkillEntries.push(...parseSkillEntries(xmlBlock));
+      parsedSkillEntries.push(...parseSkillEntries(xmlBlock, countTokens));
       skills.push(
         ...parsedSkillEntries.map((entry) => ({
           name: entry.name,
@@ -366,19 +368,21 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
       prompt,
       skillsSectionStart,
       skillsSectionEnd,
-      prefixCache,
+      countTokens,
       details,
     );
 
     if (!details) {
       sections.push(skillsSection);
     } else {
-      const children = parsedSkillEntries.map((entry): ChildRow => ({
-        label: entry.name,
-        chars: entry.chars,
-        tokens: entry.tokens,
-        content: entry.content,
-      }));
+      const children = parsedSkillEntries.map(
+        (entry): ChildRow => ({
+          label: entry.name,
+          chars: entry.chars,
+          tokens: entry.tokens,
+          content: entry.content,
+        }),
+      );
 
       sections.push({
         ...skillsSection,
@@ -394,12 +398,29 @@ export function parseSystemPrompt(prompt: string, options: MeasurementOptions = 
   // 4. Metadata footer
   if (dateLineIdx !== -1) {
     sections.push(
-      measureSpan('Metadata (date/time, cwd)', prompt, dateLineIdx, prompt.length, prefixCache, details),
+      measureSpan(
+        'Metadata (date/time, cwd)',
+        prompt,
+        dateLineIdx,
+        prompt.length,
+        countTokens,
+        details,
+      ),
     );
   }
 
   const totalChars = prompt.length;
-  const totalTokens = prefixTokens(prompt, prompt.length, prefixCache);
+  const totalTokens = countTokens(prompt);
+  const boundaryChars = totalChars - sections.reduce((sum, section) => sum + section.chars, 0);
+  const boundaryTokens = totalTokens - sections.reduce((sum, section) => sum + section.tokens, 0);
+
+  if (boundaryTokens !== 0 || boundaryChars !== 0) {
+    sections.push({
+      label: 'Prompt Boundary Overhead',
+      chars: boundaryChars,
+      tokens: boundaryTokens,
+    });
+  }
 
   return { sections, totalChars, totalTokens, skills };
 }

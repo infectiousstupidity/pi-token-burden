@@ -34,6 +34,25 @@ describe('budget section table rows', () => {
     expect(skillsItem?.drillable).toBeTruthy();
   });
 
+  it('does not present negative reconciliation as a burden percentage', () => {
+    const parsed: ParsedPrompt = {
+      sections: [
+        { label: 'Base prompt', chars: 100, tokens: 51 },
+        { label: 'Prompt Boundary Overhead', chars: 0, tokens: -1 },
+      ],
+      totalChars: 100,
+      totalTokens: 50,
+      skills: [],
+    };
+
+    const reconciliation = buildTableItems(parsed).find(
+      (item) => item.label === 'Prompt Boundary Overhead',
+    );
+
+    expect(reconciliation?.tokens).toBe(-1);
+    expect(reconciliation?.pct).toBe(0);
+  });
+
   it('preserves table item sorting, percentages, content, and child rows', () => {
     const parsed: ParsedPrompt = {
       sections: [

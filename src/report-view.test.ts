@@ -95,6 +95,33 @@ describe('showReport — rendering', () => {
     expect(overlay.render(120).join('\n')).toContain('150 / 100');
   });
 
+  it.each([
+    { boundaryTokens: -1, baseTokens: 51, expectedPct: '—', rejectedPct: '-2.0%' },
+    { boundaryTokens: 1, baseTokens: 49, expectedPct: '2.0%', rejectedPct: '—' },
+  ])(
+    'renders $boundaryTokens prompt-boundary reconciliation without a misleading percentage',
+    async ({ boundaryTokens, baseTokens, expectedPct, rejectedPct }) => {
+      const parsed: ParsedPrompt = {
+        sections: [
+          { label: 'Base prompt', chars: 100, tokens: baseTokens },
+          { label: 'Prompt Boundary Overhead', chars: 0, tokens: boundaryTokens },
+        ],
+        totalChars: 100,
+        totalTokens: 50,
+        skills: [],
+      };
+
+      const overlay = await mountOverlay(parsed);
+      const text = overlay.render(120).join('\n');
+
+      expect(text).toContain('Prompt Boundary Overhead');
+      expect(text).toContain(`${String(boundaryTokens)} tokens`);
+      expect(text).not.toContain(rejectedPct);
+      expect(text).toContain('Prompt Bo');
+      expect(text).toContain(`… ${expectedPct}`);
+    },
+  );
+
   it('keeps an empty Skills section visible for discovered hidden skills', async () => {
     const parsed: ParsedPrompt = {
       sections: [

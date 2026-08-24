@@ -37,6 +37,9 @@ describe('lightweight token budget measurement', () => {
 
     expect(summary.totalChars).toBe(detailed.totalChars);
     expect(summary.totalTokens).toBe(detailed.totalTokens);
+    expect(summary.sections.map(({ chars, tokens }) => ({ chars, tokens }))).toEqual(
+      detailed.sections.map(({ chars, tokens }) => ({ chars, tokens })),
+    );
     expect(summary.sections.reduce((total, section) => total + section.tokens, 0)).toBe(
       summary.totalTokens,
     );

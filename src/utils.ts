@@ -74,10 +74,10 @@ export function buildBarSegments(
     return [];
   }
 
-  const totalTokens = sections.reduce((sum, s) => sum + s.tokens, 0);
+  const positiveTotal = sections.reduce((sum, section) => sum + Math.max(0, section.tokens), 0);
 
   // If all tokens are zero, distribute evenly
-  if (totalTokens === 0) {
+  if (positiveTotal === 0 && sections.every((section) => section.tokens === 0)) {
     const baseWidth = Math.floor(barWidth / sections.length);
     let remainder = barWidth - baseWidth * sections.length;
     return sections.map((s) => {
@@ -87,11 +87,14 @@ export function buildBarSegments(
     });
   }
 
-  // Compute proportional widths
-  const raw = sections.map((s) => (s.tokens / totalTokens) * barWidth);
+  // Compute proportional widths. Signed reconciliation rows remain visible in
+  // the legend/table but do not claim positive width in the stacked bar.
+  const raw = sections.map((section) =>
+    section.tokens > 0 ? (section.tokens / positiveTotal) * barWidth : 0,
+  );
 
-  // Floor each, enforce minimum 1
-  const widths = raw.map((w) => Math.max(1, Math.floor(w)));
+  // Floor each positive segment, enforcing minimum 1 only for counted burden.
+  const widths = raw.map((width) => (width > 0 ? Math.max(1, Math.floor(width)) : 0));
 
   // Adjust total to match barWidth
   const currentTotal = widths.reduce((sum, w) => sum + w, 0);

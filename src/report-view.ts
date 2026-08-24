@@ -9,7 +9,7 @@ import { matchesKey, truncateToWidth, visibleWidth } from '@mariozechner/pi-tui'
 import type { TUI } from '@mariozechner/pi-tui';
 
 import type { BasePromptTraceResult, TraceBucket } from './base-trace/index.js';
-import { buildTableItems } from './buildTableItems.js';
+import { buildTableItems, isNonPositivePromptBoundaryReconciliation } from './buildTableItems.js';
 import { DisableMode } from './enums.js';
 import {
   applySkillManagementToParsed,
@@ -216,9 +216,11 @@ function renderStackedBar(
     const color = getRequiredItem(SECTION_COLORS, colorIndex);
     const section = getRequiredItem(parsed.sections, index);
     const pct =
-      parsed.totalTokens > 0 ? ((section.tokens / parsed.totalTokens) * 100).toFixed(1) : '0.0';
+      parsed.totalTokens > 0 && !isNonPositivePromptBoundaryReconciliation(section)
+        ? `${((section.tokens / parsed.totalTokens) * 100).toFixed(1)}%`
+        : '—';
     const shortLabel = shortenLabel(section.label);
-    legendParts.push(`${sgr(color, '■')} ${shortLabel} ${pct}%`);
+    legendParts.push(`${sgr(color, '■')} ${shortLabel} ${pct}`);
   }
   lines.push(row(legendParts.join('  ')));
 }
@@ -227,7 +229,7 @@ function renderTableRow(item: TableItem, isSelected: boolean, innerW: number): s
   const prefix = isSelected ? sgr('36', '▸') : dim('·');
 
   const tokenStr = `${fmt(item.tokens)} tokens`;
-  const pctStr = `${item.pct.toFixed(1)}%`;
+  const pctStr = isNonPositivePromptBoundaryReconciliation(item) ? '—' : `${item.pct.toFixed(1)}%`;
   const suffix = `${tokenStr}   ${pctStr}`;
 
   // Calculate available space for name

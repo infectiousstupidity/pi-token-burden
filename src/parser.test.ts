@@ -378,8 +378,12 @@ describe('parseSystemPrompt()', () => {
     const result = parseSystemPrompt(prompt);
 
     for (const section of result.sections) {
-      expect(section.content).toBeDefined();
-      expect(section.content?.length).toBe(section.chars);
+      if (section.label === 'Prompt Boundary Overhead') {
+        expect(section.content).toBeUndefined();
+      } else {
+        expect(section.content).toBeDefined();
+        expect(section.content?.length).toBe(section.chars);
+      }
     }
   });
 
@@ -399,6 +403,71 @@ describe('parseSystemPrompt()', () => {
     const result = parseSystemPrompt(prompt);
 
     expect(sectionTokenSum(result)).toBe(result.totalTokens);
+  });
+
+  it('keeps the exact full-prompt count and exposes boundary-sensitive reconciliation', () => {
+    const boundarySensitiveBase = `${basePrompt}\njV4e/?`;
+    const appendContent = '\n/u';
+    const prompt =
+      boundarySensitiveBase +
+      appendContent +
+      currentProjectContextBlock +
+      skillsPreamble +
+      skillsBlock +
+      currentMetadata;
+    const result = parseSystemPrompt(prompt);
+    const independentlyCountedTokens = result.sections
+      .filter((section) => section.content !== undefined)
+      .reduce((sum, section) => sum + section.tokens, 0);
+    const reconciliation = result.sections.find(
+      (section) => section.label === 'Prompt Boundary Overhead',
+    );
+
+    expect(result.totalTokens).toBe(estimateTokens(prompt));
+    expect(independentlyCountedTokens).not.toBe(result.totalTokens);
+    expect(reconciliation?.tokens).toBe(result.totalTokens - independentlyCountedTokens);
+    expect(sectionTokenSum(result)).toBe(result.totalTokens);
+    expect(result.sections.map((section) => section.label)).toEqual(
+      expect.arrayContaining([
+        'Base prompt',
+        'SYSTEM.md / APPEND_SYSTEM.md',
+        'Context files (AGENTS.md / CLAUDE.md)',
+        'Skills (2)',
+        'Metadata (date/time, cwd)',
+      ]),
+    );
+  });
+
+  it('reconciles a prompt with no optional regions from independently counted spans', () => {
+    const prompt = `${basePrompt}${currentMetadata}`;
+    const result = parseSystemPrompt(prompt);
+
+    expect(result.totalTokens).toBe(estimateTokens(prompt));
+    expect(sectionTokenSum(result)).toBe(result.totalTokens);
+  });
+
+  it('tokenizes the full prompt once and otherwise only disjoint spans', () => {
+    const prompt =
+      basePrompt +
+      '\n\nCustom SYSTEM.md instructions.' +
+      agentsBlock +
+      skillsPreamble +
+      skillsBlock +
+      currentMetadata;
+    let totalInputChars = 0;
+    let fullPromptCalls = 0;
+    const countTokens = (text: string): number => {
+      totalInputChars += text.length;
+      if (text === prompt) {
+        fullPromptCalls++;
+      }
+      return estimateTokens(text);
+    };
+
+    parseSystemPrompt(prompt, { details: false, countTokens });
+
+    expect(fullPromptCalls).toBe(1);
+    expect(totalInputChars).toBe(prompt.length * 2);
   });
 });
 
