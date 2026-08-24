@@ -10,7 +10,7 @@
  *   5. Date/time + cwd metadata
  */
 
-import { encode } from 'gpt-tokenizer/encoding/o200k_base';
+import { countTokens } from 'gpt-tokenizer/encoding/o200k_base';
 
 import { ToolEnvelope } from './enums.js';
 import type { ParsedPrompt, PromptSection, SkillEntry, ToolEntry } from './types.js';
@@ -21,7 +21,7 @@ export type { ParsedPrompt };
 
 /** Token count using BPE tokenization (o200k_base encoding). */
 export function estimateTokens(text: string): number {
-  return encode(text).length;
+  return countTokens(text);
 }
 
 interface ChildRow {
@@ -48,6 +48,10 @@ interface MeasurementOptions {
   countTokens?: (text: string) => number;
 }
 
+interface ToolMeasurementOptions extends MeasurementOptions {
+  serializeJson?: (value: unknown, indentation?: number) => string;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers (defined before use to satisfy no-use-before-define)
 // ---------------------------------------------------------------------------
@@ -60,12 +64,20 @@ function measureSpan(
   countTokens: (text: string) => number,
   details: boolean,
 ): PromptSection {
-  const text = prompt.slice(start, end);
+  if (!details) {
+    return {
+      label,
+      chars: end - start,
+      tokens: countTokens(prompt.slice(start, end)),
+    };
+  }
+
+  const content = prompt.slice(start, end);
   return {
     label,
-    chars: text.length,
-    tokens: countTokens(text),
-    ...(details ? { content: text } : {}),
+    chars: content.length,
+    tokens: countTokens(content),
+    content,
   };
 }
 
@@ -602,6 +614,58 @@ function buildToolEnvelopeVariants(tools: ToolDefinitionInput[]): ToolEnvelopeVa
   }));
 }
 
+function serializeJson(value: unknown, indentation?: number): string {
+  const serialized = JSON.stringify(value, null, indentation);
+  if (serialized === undefined) {
+    throw new TypeError('Tool envelope cannot be serialized');
+  }
+  return serialized;
+}
+
+/** Compute JSON.stringify(value, null, 2).length from its compact serialization. */
+function prettyJsonLength(compactJson: string): number {
+  let depth = 0;
+  let extraChars = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < compactJson.length; index++) {
+    const character = compactJson[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === '{' || character === '[') {
+      depth++;
+      const closingCharacter = character === '{' ? '}' : ']';
+      if (compactJson[index + 1] !== closingCharacter) {
+        extraChars += 1 + depth * 2;
+      }
+    } else if (character === '}' || character === ']') {
+      const openingCharacter = character === '}' ? '{' : '[';
+      if (compactJson[index - 1] !== openingCharacter) {
+        extraChars += 1 + (depth - 1) * 2;
+      }
+      depth--;
+    } else if (character === ',') {
+      extraChars += 1 + depth * 2;
+    } else if (character === ':') {
+      extraChars++;
+    }
+  }
+
+  return compactJson.length + extraChars;
+}
+
 /**
  * Build a PromptSection for tool definitions (function schemas sent to the LLM).
  *
@@ -615,20 +679,21 @@ export function buildToolDefinitionsSection(
   tools: ToolDefinitionInput[],
   activeToolNames?: string[],
   countedEnvelope: ToolEnvelope = ToolEnvelope.COMPACT,
-  options: MeasurementOptions = {},
+  options: ToolMeasurementOptions = {},
 ): PromptSection | null {
   if (tools.length === 0) {
     return null;
   }
 
   const details = options.details ?? true;
+  const countToolTokens = options.countTokens ?? estimateTokens;
+  const stringify = options.serializeJson ?? serializeJson;
   const activeSet = activeToolNames ? new Set(activeToolNames) : null;
   const countedTools = activeSet ? tools.filter((tool) => activeSet.has(tool.name)) : tools;
   const activeEnvelopePayload = buildToolEnvelopePayload(countedTools, countedEnvelope);
-  const totalContent = JSON.stringify(activeEnvelopePayload, null, 2);
-  const countedContent = JSON.stringify(activeEnvelopePayload);
-  const totalTokens = estimateTokens(countedContent);
-  const totalChars = totalContent.length;
+  const countedContent = stringify(activeEnvelopePayload);
+  const totalTokens = countToolTokens(countedContent);
+  const totalChars = prettyJsonLength(countedContent);
   const label = activeSet
     ? `Tool definitions (${String(countedTools.length)} active, ${String(tools.length)} total)`
     : `Tool definitions (${String(tools.length)})`;
@@ -642,12 +707,12 @@ export function buildToolDefinitionsSection(
   function serializeTools(input: ToolDefinitionInput[]): ToolEntry[] {
     return input.map((tool) => {
       const payload = buildToolEnvelopeChildPayload(tool, countedEnvelope);
-      const content = JSON.stringify(payload, null, 2);
-      const countedPayload = JSON.stringify(payload);
+      const content = stringify(payload, 2);
+      const countedPayload = stringify(payload);
       return {
         name: tool.name,
         chars: content.length,
-        tokens: estimateTokens(countedPayload),
+        tokens: countToolTokens(countedPayload),
         content,
       };
     });
@@ -656,11 +721,11 @@ export function buildToolDefinitionsSection(
   const activeEntries = serializeTools(countedTools);
   const inactiveEntries = serializeTools(inactiveTools);
   const variants = buildToolEnvelopeVariants(countedTools).map((variant) => {
-    const content = JSON.stringify(variant.payload, null, 2);
+    const content = stringify(variant.payload, 2);
     return {
       name: variant.name,
       chars: content.length,
-      tokens: estimateTokens(JSON.stringify(variant.payload)),
+      tokens: countToolTokens(stringify(variant.payload)),
       content,
     };
   });
