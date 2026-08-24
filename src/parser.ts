@@ -719,16 +719,26 @@ export function buildToolDefinitionsSection(
   }
 
   const activeEntries = serializeTools(countedTools);
-  const inactiveEntries = serializeTools(inactiveTools);
-  const variants = buildToolEnvelopeVariants(countedTools).map((variant) => {
-    const content = stringify(variant.payload, 2);
-    return {
-      name: variant.name,
-      chars: content.length,
-      tokens: countToolTokens(stringify(variant.payload)),
-      content,
-    };
-  });
+  let inactiveEntries: ToolEntry[] | undefined;
+  let variants: ToolEntry[] | undefined;
+
+  const loadInactive = (): ToolEntry[] => {
+    inactiveEntries ??= serializeTools(inactiveTools);
+    return inactiveEntries;
+  };
+
+  const loadVariants = (): ToolEntry[] => {
+    variants ??= buildToolEnvelopeVariants(countedTools).map((variant) => {
+      const content = stringify(variant.payload, 2);
+      return {
+        name: variant.name,
+        chars: content.length,
+        tokens: countToolTokens(stringify(variant.payload)),
+        content,
+      };
+    });
+    return variants;
+  };
 
   const children: {
     label: string;
@@ -762,9 +772,10 @@ export function buildToolDefinitionsSection(
     tokens: totalTokens,
     tools: {
       active: activeEntries,
-      inactive: inactiveEntries,
-      variants,
+      inactiveCount: inactiveTools.length,
       countedEnvelope,
+      loadInactive,
+      loadVariants,
     },
     children: reconciledChildren,
   };

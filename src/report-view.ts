@@ -267,6 +267,7 @@ interface OverlayState {
   drilldownSection: TableItem | null;
   toolsSection: TableItem | null;
   toolsInactiveExpanded: boolean;
+  toolsEnvelopeExpanded: boolean;
   confirmingDiscard: boolean;
   skillLoading: boolean;
   skillLoadError: string | null;
@@ -276,7 +277,7 @@ interface OverlayState {
 }
 
 interface ToolsRow {
-  kind: 'active-tool' | 'inactive-header' | 'inactive-tool';
+  kind: 'active-tool' | 'inactive-header' | 'inactive-tool' | 'envelope-header' | 'envelope';
   label: string;
   tokens?: number;
   content?: string;
@@ -299,6 +300,7 @@ class BudgetOverlay {
     drilldownSection: null,
     toolsSection: null,
     toolsInactiveExpanded: false,
+    toolsEnvelopeExpanded: false,
     confirmingDiscard: false,
     skillLoading: false,
     skillLoadError: null,
@@ -535,6 +537,7 @@ class BudgetOverlay {
       this.state.mode = 'tools';
       this.state.toolsSection = selected;
       this.state.toolsInactiveExpanded = false;
+      this.state.toolsEnvelopeExpanded = false;
       this.state.selectedIndex = 0;
       this.state.scrollOffset = 0;
       this.state.searchActive = false;
@@ -610,6 +613,7 @@ class BudgetOverlay {
       this.state.mode = 'sections';
       this.state.toolsSection = null;
       this.state.toolsInactiveExpanded = false;
+      this.state.toolsEnvelopeExpanded = false;
       this.state.selectedIndex = 0;
       this.state.scrollOffset = 0;
       this.invalidate();
@@ -631,6 +635,9 @@ class BudgetOverlay {
       if (row?.kind === 'inactive-header') {
         this.state.toolsInactiveExpanded = !this.state.toolsInactiveExpanded;
         this.invalidate();
+      } else if (row?.kind === 'envelope-header') {
+        this.state.toolsEnvelopeExpanded = !this.state.toolsEnvelopeExpanded;
+        this.invalidate();
       }
       return;
     }
@@ -645,7 +652,21 @@ class BudgetOverlay {
   }
 
   private getInactiveTools(): ToolEntry[] {
-    return (this.state.toolsSection?.tools?.inactive ?? []).toSorted((a, b) => b.tokens - a.tokens);
+    const tools = this.state.toolsSection?.tools;
+    if (!tools) {
+      return [];
+    }
+    tools.inactive ??= tools.loadInactive?.() ?? [];
+    return tools.inactive.toSorted((a, b) => b.tokens - a.tokens);
+  }
+
+  private getEnvelopeVariants(): ToolEntry[] {
+    const tools = this.state.toolsSection?.tools;
+    if (!tools) {
+      return [];
+    }
+    tools.variants ??= tools.loadVariants?.() ?? [];
+    return tools.variants;
   }
 
   private getToolsRows(): ToolsRow[] {
@@ -656,17 +677,20 @@ class BudgetOverlay {
       content: tool.content,
     }));
 
-    const inactive = this.getInactiveTools();
-    if (inactive.length > 0) {
-      const inactiveTokens = inactive.reduce((sum, tool) => sum + tool.tokens, 0);
-      rows.push({
-        kind: 'inactive-header',
-        label: `Inactive (${String(inactive.length)}, +${fmt(inactiveTokens)} tok if enabled)`,
-      });
+    const tools = this.state.toolsSection?.tools;
+    const inactiveCount = tools?.inactiveCount ?? tools?.inactive?.length ?? 0;
+    if (inactiveCount > 0) {
+      let inactiveLabel = `Inactive (${String(inactiveCount)})`;
+      if (this.state.toolsInactiveExpanded || tools?.inactive) {
+        const inactive = this.getInactiveTools();
+        const inactiveTokens = inactive.reduce((sum, tool) => sum + tool.tokens, 0);
+        inactiveLabel = `Inactive (${String(inactive.length)}, +${fmt(inactiveTokens)} tok if enabled)`;
+      }
+      rows.push({ kind: 'inactive-header', label: inactiveLabel });
 
       if (this.state.toolsInactiveExpanded) {
         rows.push(
-          ...inactive.map((tool) => ({
+          ...this.getInactiveTools().map((tool) => ({
             kind: 'inactive-tool' as const,
             label: tool.name,
             tokens: tool.tokens,
@@ -674,6 +698,21 @@ class BudgetOverlay {
           })),
         );
       }
+    }
+
+    rows.push({
+      kind: 'envelope-header',
+      label: `Provider envelopes (${tools?.countedEnvelope ?? 'compact'} counted)`,
+    });
+    if (this.state.toolsEnvelopeExpanded) {
+      rows.push(
+        ...this.getEnvelopeVariants().map((variant) => ({
+          kind: 'envelope' as const,
+          label: variant.name,
+          tokens: variant.tokens,
+          content: variant.content,
+        })),
+      );
     }
 
     return rows;
@@ -1340,7 +1379,7 @@ class BudgetOverlay {
     for (let i = startIdx; i < endIdx; i++) {
       const tool = getRequiredItem(rows, i);
       const isSelected = i === this.state.selectedIndex;
-      if (tool.kind === 'inactive-header') {
+      if (tool.kind === 'inactive-header' || tool.kind === 'envelope-header') {
         const prefix = isSelected ? sgr('36', '▸') : dim('·');
         const label = isSelected ? bold(sgr('36', tool.label)) : dim(tool.label);
         lines.push(row(`${prefix} ${label}`));

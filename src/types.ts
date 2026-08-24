@@ -29,12 +29,15 @@ export interface ToolEntry {
   content: string;
 }
 
-/** Active, inactive, and provider-specific tool-definition costs. */
+/** Current and demand-loaded informational tool-definition costs. */
 interface ToolSectionData {
   active: ToolEntry[];
-  inactive: ToolEntry[];
+  inactive?: ToolEntry[];
+  inactiveCount?: number;
   variants?: ToolEntry[];
   countedEnvelope?: ToolEnvelope;
+  loadInactive?: () => ToolEntry[];
+  loadVariants?: () => ToolEntry[];
 }
 
 /** One measured Budget Section and its optional drill-down data. */

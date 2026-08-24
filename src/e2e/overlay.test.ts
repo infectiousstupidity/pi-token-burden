@@ -157,10 +157,10 @@ describe('overlay — tools view with inactive tools', () => {
     removeIsolatedAgentDir(agentDir);
   });
 
-  it('should show inactive tools as a collapsed counterfactual group', () => {
+  it('should show the inactive tool count without counterfactual cost while collapsed', () => {
     const collapsed = harness.capture().join('\n');
-    expect(collapsed).toContain('Inactive (');
-    expect(collapsed).toContain('if enabled');
+    expect(collapsed).toMatch(/Inactive \(\d+\)/);
+    expect(collapsed).not.toContain('if enabled');
     expect(collapsed).not.toMatch(/[·▸]\s+bash\s+\d+ tok/);
   });
 

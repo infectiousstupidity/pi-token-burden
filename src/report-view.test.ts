@@ -1,7 +1,7 @@
 import { fromPartial } from '@total-typescript/shoehorn';
 
 import type { BasePromptTraceResult } from './base-trace/index.js';
-import { DisableMode } from './enums.js';
+import { DisableMode, ToolEnvelope } from './enums.js';
 import { getEditor, isReadOnlySection, showReport } from './report-view.js';
 import type { ParsedPrompt, SkillInfo } from './types.js';
 
@@ -479,7 +479,15 @@ describe('showReport — tools view', () => {
     expect(text).not.toContain('bash');
   });
 
-  it('shows Inactive as a collapsed counterfactual group by default', async () => {
+  it('loads inactive counterfactual detail once when its collapsed group is opened', async () => {
+    const loadInactive = vi.fn(() => [
+      {
+        name: 'bash',
+        chars: 50,
+        tokens: 12,
+        content: '{"name":"bash"}',
+      },
+    ]);
     const parsed: ParsedPrompt = {
       sections: [
         {
@@ -496,14 +504,9 @@ describe('showReport — tools view', () => {
                 content: '{"name":"read"}',
               },
             ],
-            inactive: [
-              {
-                name: 'bash',
-                chars: 50,
-                tokens: 12,
-                content: '{"name":"bash"}',
-              },
-            ],
+            inactiveCount: 1,
+            countedEnvelope: ToolEnvelope.OPEN_AI_RESPONSES,
+            loadInactive,
           },
         },
       ],
@@ -515,10 +518,67 @@ describe('showReport — tools view', () => {
     const overlay = await mountOverlay(parsed);
     overlay.handleInput('\r');
 
-    const text = overlay.render(120).join('\n');
+    expect(overlay.render(120).join('\n')).toContain('Inactive (1)');
+    expect(loadInactive).not.toHaveBeenCalled();
 
-    expect(text).toContain('Inactive (1, +12 tok if enabled)');
-    expect(text).not.toContain('bash');
+    overlay.handleInput('\u001B[B');
+    overlay.handleInput('\r');
+
+    expect(overlay.render(120).join('\n')).toContain('bash');
+    overlay.handleInput('\r');
+    overlay.handleInput('\r');
+    expect(loadInactive).toHaveBeenCalledTimes(1);
+    expect(parsed.totalTokens).toBe(10);
+  });
+
+  it('loads provider envelope comparison once and preserves current totals', async () => {
+    const loadVariants = vi.fn(() => [
+      {
+        name: ToolEnvelope.COMPACT,
+        chars: 20,
+        tokens: 5,
+        content: '[{"name":"read"}]',
+      },
+    ]);
+    const parsed: ParsedPrompt = {
+      sections: [
+        {
+          label: 'Tool definitions (1 active, 1 total)',
+          chars: 100,
+          tokens: 10,
+          children: [{ label: 'read', chars: 40, tokens: 10 }],
+          tools: {
+            active: [
+              {
+                name: 'read',
+                chars: 40,
+                tokens: 10,
+                content: '{"name":"read"}',
+              },
+            ],
+            inactiveCount: 0,
+            countedEnvelope: ToolEnvelope.OPEN_AI_RESPONSES,
+            loadVariants,
+          },
+        },
+      ],
+      totalChars: 100,
+      totalTokens: 10,
+      skills: [],
+    };
+
+    const overlay = await mountOverlay(parsed);
+    overlay.handleInput('\r');
+    expect(loadVariants).not.toHaveBeenCalled();
+
+    overlay.handleInput('\u001B[B');
+    overlay.handleInput('\r');
+    expect(overlay.render(120).join('\n')).toContain(ToolEnvelope.COMPACT);
+    overlay.handleInput('\r');
+    overlay.handleInput('\r');
+
+    expect(loadVariants).toHaveBeenCalledTimes(1);
+    expect(parsed.totalTokens).toBe(10);
   });
 
   it('expands inactive tools after navigating past active tools', async () => {

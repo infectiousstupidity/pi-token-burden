@@ -554,7 +554,7 @@ describe('buildToolDefinitionsSection()', () => {
     );
   });
 
-  it('preserves inactive tool costs as counterfactual data without counting them', () => {
+  it('loads inactive counterfactual costs on demand without counting them', () => {
     const tools = [
       {
         name: 'read',
@@ -591,16 +591,92 @@ describe('buildToolDefinitionsSection()', () => {
             content: activeContent,
           },
         ],
-        inactive: [
-          {
-            name: 'bash',
-            chars: inactiveContent.length,
-            tokens: estimateTokens(inactivePayload),
-            content: inactiveContent,
-          },
-        ],
+        inactiveCount: 1,
       },
     });
+    expect(section?.tools?.inactive).toBeUndefined();
+    expect(section?.tools?.loadInactive?.()).toStrictEqual([
+      {
+        name: 'bash',
+        chars: inactiveContent.length,
+        tokens: estimateTokens(inactivePayload),
+        content: inactiveContent,
+      },
+    ]);
+  });
+
+  it('defers inactive and alternate-envelope serialization and caches each detail', () => {
+    const tools = [
+      { name: 'read', description: 'Read files', parameters: { type: 'object' } },
+      { name: 'bash', description: 'Run commands', parameters: { type: 'object' } },
+    ];
+    const serializations: unknown[] = [];
+    const tokenized: string[] = [];
+    const section = buildToolDefinitionsSection(tools, ['read'], ToolEnvelope.ANTHROPIC, {
+      serializeJson: (value, indentation) => {
+        serializations.push(value);
+        return JSON.stringify(value, null, indentation);
+      },
+      countTokens: (text) => {
+        tokenized.push(text);
+        return estimateTokens(text);
+      },
+    });
+    const initialTotal = section?.tokens;
+    const initialSerializationCount = serializations.length;
+    const initialTokenizationCount = tokenized.length;
+
+    expect(section?.tools).toMatchObject({
+      inactiveCount: 1,
+      countedEnvelope: ToolEnvelope.ANTHROPIC,
+    });
+    expect(initialSerializationCount).toBe(3);
+    expect(initialTokenizationCount).toBe(2);
+
+    const inactive = section?.tools?.loadInactive?.();
+    expect(inactive).toHaveLength(1);
+    expect(serializations).toHaveLength(initialSerializationCount + 2);
+    expect(tokenized).toHaveLength(initialTokenizationCount + 1);
+    expect(section?.tools?.loadInactive?.()).toBe(inactive);
+    expect(serializations).toHaveLength(initialSerializationCount + 2);
+
+    const variants = section?.tools?.loadVariants?.();
+    expect(variants?.map((variant) => variant.name)).toStrictEqual([
+      ToolEnvelope.COMPACT,
+      ToolEnvelope.OPEN_AI_RESPONSES,
+      ToolEnvelope.OPEN_AI_CHAT,
+      ToolEnvelope.ANTHROPIC,
+      ToolEnvelope.BEDROCK,
+      ToolEnvelope.GOOGLE,
+      ToolEnvelope.MISTRAL,
+    ]);
+    expect(section?.tools?.loadVariants?.()).toBe(variants);
+    const envelopes = [
+      ToolEnvelope.COMPACT,
+      ToolEnvelope.OPEN_AI_RESPONSES,
+      ToolEnvelope.OPEN_AI_CHAT,
+      ToolEnvelope.ANTHROPIC,
+      ToolEnvelope.BEDROCK,
+      ToolEnvelope.GOOGLE,
+      ToolEnvelope.MISTRAL,
+    ];
+    for (const [index, envelope] of envelopes.entries()) {
+      const variant = getRequiredItem(variants ?? [], index);
+      const expected = buildToolDefinitionsSection(tools, ['read'], envelope);
+      expect(variant.tokens).toBe(expected?.tokens);
+      expect(variant.chars).toBe(expected?.chars);
+    }
+    expect(section?.tokens).toBe(initialTotal);
+  });
+
+  it('keeps empty inactive detail demand-driven and simple', () => {
+    const section = buildToolDefinitionsSection(
+      [{ name: 'read', description: 'Read files', parameters: {} }],
+      ['read'],
+    );
+
+    expect(section?.tools?.inactiveCount).toBe(0);
+    expect(section?.tools?.loadInactive?.()).toStrictEqual([]);
   });
 
   it('counts only the compact LLM-visible tool schema payload', () => {
