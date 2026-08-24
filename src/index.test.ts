@@ -9,6 +9,7 @@ interface TestContext {
   getSystemPrompt(): string;
   getContextUsage(): { contextWindow?: number } | null;
   hasUI: boolean;
+  isIdle(): boolean;
   model?: { api?: string; provider?: string; contextWindow?: number };
 }
 
@@ -83,6 +84,7 @@ function createContext(prompt = 'session prompt'): TestContext {
     getSystemPrompt: vi.fn(() => prompt),
     getContextUsage: vi.fn(() => ({ contextWindow: 10_000 })),
     hasUI: false,
+    isIdle: vi.fn(() => true),
     model: {
       api: 'anthropic-messages',
       provider: 'openrouter',
@@ -142,6 +144,15 @@ function runEvent(
   ctx: TestContext,
 ): void {
   void getEventHandler(handlers, eventName)(event, ctx);
+}
+
+function runOptionalEvent(
+  handlers: Map<string, EventHandler>,
+  eventName: string,
+  event: Record<string, unknown>,
+  ctx: TestContext,
+): void {
+  void handlers.get(eventName)?.(event, ctx);
 }
 
 async function flushAsync(): Promise<void> {
@@ -224,6 +235,35 @@ describe('token-burden extension entrypoint', () => {
 });
 
 describe('Atelier sidebar lifecycle', () => {
+  it('captures a prompt before discovery and measures it only after discovery while settled', async () => {
+    const { bus, handlers, tools } = await setupExtension();
+    const ctx = createContext('base chat prompt');
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'captured before discovery' },
+      ctx,
+    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
+
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    expect(evaluations.measureTokenBudget).toBe(0);
+
+    bus.discover();
+    await vi.waitFor(() => {
+      expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+    expect(mockMeasureTokenBudget).toHaveBeenCalledWith({
+      prompt: 'captured before discovery',
+      allTools: tools,
+      activeToolNames: ['read'],
+      modelApi: 'anthropic-messages',
+      modelProvider: 'openrouter',
+      details: false,
+    });
+  });
+
   it('measures the base chat after discovery and session start', async () => {
     const { bus, handlers, tools } = await setupExtension();
     const ctx = createContext('base chat prompt');
@@ -258,7 +298,7 @@ describe('Atelier sidebar lifecycle', () => {
     });
   });
 
-  it('cancels a pending startup refresh when the first prompt is submitted', async () => {
+  it('defers the exact assembled prompt until the agent settles', async () => {
     const { bus, handlers, tools } = await setupExtension();
     const ctx = createContext('base chat prompt');
 
@@ -273,13 +313,25 @@ describe('Atelier sidebar lifecycle', () => {
     expect(result).toBeUndefined();
     await flushAsync();
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    expect(evaluations.measureTokenBudget).toBe(0);
 
-    runEvent(
+    runOptionalEvent(
       handlers,
       'message_start',
       { type: 'message_start', message: { role: 'assistant' } },
       ctx,
     );
+    runOptionalEvent(
+      handlers,
+      'message_end',
+      { type: 'message_end', message: { role: 'assistant' } },
+      ctx,
+    );
+    await flushAsync();
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    expect(evaluations.measureTokenBudget).toBe(0);
+
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -294,26 +346,65 @@ describe('Atelier sidebar lifecycle', () => {
     });
   });
 
-  it('uses assistant message_end as a fallback', async () => {
+  it('does not start measurement when settled fires before the context reports idle', async () => {
     const { bus, handlers } = await setupExtension();
+    const ctx = createContext();
+    const isIdle = vi.mocked(ctx.isIdle);
+    bus.discover();
+
+    runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'active prompt' },
+      ctx,
+    );
+    isIdle.mockReturnValue(false);
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
+    await flushAsync();
+
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    expect(evaluations.measureTokenBudget).toBe(0);
+  });
+
+  it('coalesces repeated runs to the latest prompt before settling', async () => {
+    const { bus, handlers, tools } = await setupExtension();
     const ctx = createContext();
     bus.discover();
 
     runEvent(
       handlers,
       'before_agent_start',
-      { type: 'before_agent_start', systemPrompt: 'fallback prompt' },
+      { type: 'before_agent_start', systemPrompt: 'stale prompt' },
       ctx,
     );
     runEvent(
+      handlers,
+      'before_agent_start',
+      { type: 'before_agent_start', systemPrompt: 'latest prompt' },
+      ctx,
+    );
+    runOptionalEvent(
       handlers,
       'message_end',
       { type: 'message_end', message: { role: 'assistant' } },
       ctx,
     );
+    await flushAsync();
 
+    expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
+    expect(evaluations.measureTokenBudget).toBe(0);
+
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
+    });
+    expect(mockMeasureTokenBudget).toHaveBeenCalledWith({
+      prompt: 'latest prompt',
+      allTools: tools,
+      activeToolNames: ['read'],
+      modelApi: 'anthropic-messages',
+      modelProvider: 'openrouter',
+      details: false,
     });
   });
 
@@ -328,12 +419,7 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'same prompt' },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_start',
-      { type: 'message_start', message: { role: 'assistant' } },
-      ctx,
-    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -345,12 +431,7 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'same prompt' },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_start',
-      { type: 'message_start', message: { role: 'assistant' } },
-      ctx,
-    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await flushAsync();
 
     expect(mockMeasureTokenBudget).not.toHaveBeenCalled();
@@ -367,12 +448,7 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'first prompt' },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_start',
-      { type: 'message_start', message: { role: 'assistant' } },
-      ctx,
-    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -384,12 +460,7 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'second prompt' },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_start',
-      { type: 'message_start', message: { role: 'assistant' } },
-      ctx,
-    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });
@@ -406,12 +477,7 @@ describe('Atelier sidebar lifecycle', () => {
       { type: 'before_agent_start', systemPrompt: 'same prompt' },
       ctx,
     );
-    runEvent(
-      handlers,
-      'message_start',
-      { type: 'message_start', message: { role: 'assistant' } },
-      ctx,
-    );
+    runEvent(handlers, 'agent_settled', { type: 'agent_settled' }, ctx);
     await vi.waitFor(() => {
       expect(mockMeasureTokenBudget).toHaveBeenCalledTimes(1);
     });

@@ -23,6 +23,21 @@ interface PendingSidebarRefresh {
   prompt?: string;
 }
 
+interface AgentSettledEvent {
+  type: 'agent_settled';
+}
+
+type AgentSettledHandler = (
+  event: AgentSettledEvent,
+  ctx: ExtensionContext,
+) => void | Promise<void>;
+
+declare module '@mariozechner/pi-coding-agent' {
+  interface ExtensionAPI {
+    on(event: 'agent_settled', handler: AgentSettledHandler): void;
+  }
+}
+
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -43,6 +58,7 @@ function sameToolDefinitions(left: ToolDefinitions, right: ToolDefinitions): boo
 }
 
 const EXTENSION: ExtensionFactory = (pi) => {
+  let agentActive = false;
   let atelierDiscovered = false;
   let sessionContext: ExtensionContext | undefined;
   let measurementCache: SidebarMeasurementCache | undefined;
@@ -50,6 +66,11 @@ const EXTENSION: ExtensionFactory = (pi) => {
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   const publishSidebar = async (ctx: ExtensionContext, prompt: string): Promise<void> => {
+    if (agentActive || !ctx.isIdle()) {
+      pendingRefresh ??= { ctx, prompt };
+      return;
+    }
+
     const allTools = pi.getAllTools();
     const activeToolNames = pi.getActiveTools();
     const modelApi = ctx.model?.api;
@@ -68,6 +89,10 @@ const EXTENSION: ExtensionFactory = (pi) => {
       parsed = cached.parsed;
     } else {
       const { measureTokenBudget } = await import('./measureTokenBudget.js');
+      if (agentActive || !ctx.isIdle()) {
+        pendingRefresh ??= { ctx, prompt };
+        return;
+      }
       parsed = measureTokenBudget({
         prompt,
         allTools,
@@ -98,7 +123,12 @@ const EXTENSION: ExtensionFactory = (pi) => {
   };
 
   const flushPendingRefresh = (): void => {
-    if (!pendingRefresh || refreshTimer !== undefined) {
+    if (
+      agentActive ||
+      !pendingRefresh ||
+      refreshTimer !== undefined ||
+      !pendingRefresh.ctx.isIdle()
+    ) {
       return;
     }
 
@@ -106,6 +136,10 @@ const EXTENSION: ExtensionFactory = (pi) => {
     pendingRefresh = undefined;
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined;
+      if (agentActive || !refresh.ctx.isIdle()) {
+        pendingRefresh ??= refresh;
+        return;
+      }
       const prompt = refresh.prompt ?? refresh.ctx.getSystemPrompt();
       void publishSidebar(refresh.ctx, prompt).catch(() => undefined);
     }, 0);
@@ -123,13 +157,16 @@ const EXTENSION: ExtensionFactory = (pi) => {
       }
       atelierDiscovered = true;
       sidebar.update([{ text: 'Measuring…', role: 'context' }]);
-      if (sessionContext) {
+      if (pendingRefresh) {
+        flushPendingRefresh();
+      } else if (sessionContext) {
         scheduleCurrentPrompt(sessionContext);
       }
     },
   });
 
   pi.on('session_start', (_event, ctx) => {
+    agentActive = false;
     sessionContext = ctx;
     measurementCache = undefined;
     pendingRefresh = undefined;
@@ -140,23 +177,17 @@ const EXTENSION: ExtensionFactory = (pi) => {
   });
 
   pi.on('before_agent_start', (event, ctx) => {
-    if (!atelierDiscovered) {
-      return;
-    }
-
+    agentActive = true;
     // If the startup refresh has not started yet, let the model go first.
     cancelRefresh();
     pendingRefresh = { ctx, prompt: event.systemPrompt };
   });
 
-  pi.on('message_start', (event) => {
-    if (event.message.role === 'assistant') {
-      flushPendingRefresh();
-    }
-  });
-
-  pi.on('message_end', (event) => {
-    if (event.message.role === 'assistant') {
+  // The installed Pi CLI exposes this post-retry/compaction event, while the
+  // peer package's older declaration does not yet include it.
+  pi.on('agent_settled', () => {
+    agentActive = false;
+    if (atelierDiscovered) {
       flushPendingRefresh();
     }
   });
