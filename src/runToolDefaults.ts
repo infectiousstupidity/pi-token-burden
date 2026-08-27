@@ -23,6 +23,10 @@ export async function runToolDefaults(
   if (!ctx.hasUI) {
     return;
   }
+  if (typeof pi.setActiveTools !== 'function') {
+    ctx.ui.notify('This Pi build does not expose dynamic tool loading.', 'error');
+    return;
+  }
 
   const initial = loadDeferredToolsSettings();
   let enabled = initial.enabled;
@@ -62,7 +66,7 @@ export async function runToolDefaults(
 
       if (enabled) {
         applyDeferredToolDefaults(pi, settings);
-      } else if (typeof pi.setActiveTools === 'function') {
+      } else {
         pi.setActiveTools(allToolNames);
       }
 
