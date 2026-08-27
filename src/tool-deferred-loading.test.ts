@@ -128,10 +128,7 @@ describe('deferred tool loading', () => {
     const settingsPath = `${tempDir}/settings.json`;
 
     try {
-      saveDeferredToolsSettings(
-        { enabled: false, alwaysActive: ['web_search'] },
-        settingsPath,
-      );
+      saveDeferredToolsSettings({ enabled: false, alwaysActive: ['web_search'] }, settingsPath);
       process.env[DEFERRED_TOOLS_ENV] = '1';
       process.env[ALWAYS_ACTIVE_TOOLS_ENV] = 'read,bash,read';
 
