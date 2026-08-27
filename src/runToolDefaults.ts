@@ -62,14 +62,14 @@ export async function runToolDefaults(
 
       if (enabled) {
         applyDeferredToolDefaults(pi, settings);
-      } else {
-        pi.setActiveTools(pi.getAllTools().map((tool) => tool.name));
+      } else if (typeof pi.setActiveTools === 'function') {
+        pi.setActiveTools(allToolNames);
       }
 
       ctx.ui.notify(
         enabled
           ? `Deferred tools enabled: ${String(settings.alwaysActive.length)} default active + ${TOOL_SEARCH_NAME}.`
-          : 'Deferred tools disabled: all registered tools are active.',
+          : 'Deferred tools disabled: all registered non-loader tools are active.',
         'info',
       );
       return;
