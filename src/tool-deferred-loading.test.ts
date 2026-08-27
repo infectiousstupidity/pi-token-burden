@@ -9,6 +9,7 @@ import {
   DEFERRED_TOOLS_ENV,
   loadDeferredToolsSettings,
   registerDeferredToolSearch,
+  resolveDeferredToolsSettings,
   saveDefaultActiveTools,
   saveDeferredToolsSettings,
   TOOL_SEARCH_NAME,
@@ -64,7 +65,11 @@ const tools: TestTool[] = [
   { name: 'edit', description: 'Edit files', parameters: {} },
   { name: 'write', description: 'Write files', parameters: {} },
   { name: TOOL_SEARCH_NAME, description: 'Search deferred tools', parameters: {} },
-  { name: 'lens_diagnostics', description: 'TypeScript diagnostics and compiler errors', parameters: {} },
+  {
+    name: 'lens_diagnostics',
+    description: 'TypeScript diagnostics and compiler errors',
+    parameters: {},
+  },
   { name: 'web_search', description: 'Search the web', parameters: {} },
 ];
 
@@ -123,7 +128,7 @@ describe('deferred tool loading', () => {
     }
   });
 
-  it('lets benchmark env vars override persisted settings without rewriting them', () => {
+  it('applies benchmark env vars only to runtime resolution', () => {
     const tempDir = `${process.cwd()}/.tmp-token-burden-env-${String(process.pid)}`;
     const settingsPath = `${tempDir}/settings.json`;
 
@@ -132,14 +137,19 @@ describe('deferred tool loading', () => {
       process.env[DEFERRED_TOOLS_ENV] = '1';
       process.env[ALWAYS_ACTIVE_TOOLS_ENV] = 'read,bash,read';
 
-      expect(loadDeferredToolsSettings(settingsPath)).toEqual({
+      const persisted = loadDeferredToolsSettings(settingsPath);
+      expect(persisted).toEqual({
+        enabled: false,
+        alwaysActive: ['web_search'],
+      });
+      expect(resolveDeferredToolsSettings(persisted)).toEqual({
         enabled: true,
         alwaysActive: ['read', 'bash'],
       });
 
       delete process.env[DEFERRED_TOOLS_ENV];
       delete process.env[ALWAYS_ACTIVE_TOOLS_ENV];
-      expect(loadDeferredToolsSettings(settingsPath)).toEqual({
+      expect(resolveDeferredToolsSettings(loadDeferredToolsSettings(settingsPath))).toEqual({
         enabled: false,
         alwaysActive: ['web_search'],
       });
