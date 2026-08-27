@@ -14,6 +14,7 @@ const configText = readFileSync(configPath, 'utf8');
 const tasksText = readFileSync(tasksPath, 'utf8');
 const config = JSON.parse(configText);
 const tasks = JSON.parse(tasksText).tasks;
+const WINDOWS_SHELL = process.platform === 'win32';
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -49,9 +50,17 @@ function extractRuntime(stdout) {
 
 function runProcess(command, args, options) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, options);
+    let settled = false;
     let stdout = '';
     let stderr = '';
+    const child = spawn(command, args, { ...options, shell: WINDOWS_SHELL });
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
+
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
     });
@@ -63,9 +72,14 @@ function runProcess(command, args, options) {
       child.kill('SIGTERM');
     }, config.timeoutMs ?? 300000);
 
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      stderr += `${error.message}\n`;
+      finish({ code: null, signal: null, stdout, stderr });
+    });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      resolvePromise({ code, signal, stdout, stderr });
+      finish({ code, signal, stdout, stderr });
     });
   });
 }
@@ -171,7 +185,10 @@ for (const task of tasks) {
   }
 }
 
-const piVersion = spawnSync(piBin, ['--version'], { encoding: 'utf8' }).stdout?.trim();
+const piVersion = spawnSync(piBin, ['--version'], {
+  encoding: 'utf8',
+  shell: WINDOWS_SHELL,
+}).stdout?.trim();
 
 const preflight = {
   version: 1,
