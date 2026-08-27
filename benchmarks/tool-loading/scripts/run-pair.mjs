@@ -9,6 +9,7 @@ const benchDir = resolve(scriptDir, '..');
 const repoRoot = resolve(benchDir, '../..');
 const config = JSON.parse(readFileSync(resolve(benchDir, 'benchmark.json'), 'utf8'));
 const taskList = JSON.parse(readFileSync(resolve(benchDir, 'tasks.json'), 'utf8')).tasks;
+const WINDOWS_SHELL = process.platform === 'win32';
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -83,16 +84,11 @@ function analyze(events, task) {
 
   for (const event of events) {
     if (event?.type === 'tool_execution_start' && typeof event.toolName === 'string') {
-      toolCalls.push({
-        name: event.toolName,
-        args: event.args ?? null,
-      });
+      toolCalls.push({ name: event.toolName, args: event.args ?? null });
     }
-
     if (event?.type === 'tool_execution_end' && event.toolName === 'search_tools') {
       searchActivations.push(...extractActivated(event.result));
     }
-
     if (event?.type === 'message_end' && event.message?.role === 'assistant') {
       addUsage(usage, event.message.usage);
       const text = textFromContent(event.message.content);
@@ -131,10 +127,17 @@ function analyze(events, task) {
 
 function runProcess(command, args, options, timeoutMs) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, args, options);
+    let settled = false;
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    const child = spawn(command, args, { ...options, shell: WINDOWS_SHELL });
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(result);
+    };
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -148,9 +151,14 @@ function runProcess(command, args, options, timeoutMs) {
       child.kill('SIGTERM');
     }, timeoutMs);
 
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      stderr += `${error.message}\n`;
+      finish({ code: null, signal: null, stdout, stderr, timedOut });
+    });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      resolvePromise({ code, signal, stdout, stderr, timedOut });
+      finish({ code, signal, stdout, stderr, timedOut });
     });
   });
 }
@@ -174,11 +182,12 @@ async function runOne({ mode, task, repetition, runDir, piBin, model, thinking, 
 
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
-  const result = await runProcess(piBin, args, {
-    cwd,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }, config.timeoutMs ?? 300000);
+  const result = await runProcess(
+    piBin,
+    args,
+    { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] },
+    config.timeoutMs ?? 300000,
+  );
   const durationMs = Date.now() - started;
 
   const stem = String(repetition).padStart(2, '0');
@@ -245,16 +254,7 @@ const cwd = resolve(arg('--cwd', repoRoot));
 const order = repetition % 2 === 1 ? ['baseline', 'deferred'] : ['deferred', 'baseline'];
 
 for (const mode of order) {
-  const result = await runOne({
-    mode,
-    task,
-    repetition,
-    runDir,
-    piBin,
-    model,
-    thinking,
-    cwd,
-  });
+  const result = await runOne({ mode, task, repetition, runDir, piBin, model, thinking, cwd });
   console.log(
     `${task.id} rep ${String(repetition)} ${mode}: exit=${String(result.exitCode)} target=${String(result.targetHit)} search=${String(result.searchCalls)} ${String(result.durationMs)}ms`,
   );
