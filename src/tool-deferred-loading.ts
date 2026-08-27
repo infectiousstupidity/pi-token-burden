@@ -107,17 +107,24 @@ function parseAlwaysActiveEnv(value: string | undefined): string[] | undefined {
   return [...new Set(value.split(',').map((name) => name.trim()).filter(Boolean))];
 }
 
+/** Load only durable user settings. Runtime benchmark overrides are intentionally excluded. */
 export function loadDeferredToolsSettings(
   settingsPath = getPiSettingsPath(),
 ): ResolvedDeferredToolsSettings {
   const settings = decodeTokenBurdenSettings(loadSettings(settingsPath));
-  const envEnabled = parseBooleanEnv(process.env[DEFERRED_TOOLS_ENV]);
-  const envAlwaysActive = parseAlwaysActiveEnv(process.env[ALWAYS_ACTIVE_TOOLS_ENV]);
-
   return {
-    enabled: envEnabled ?? settings.deferredTools?.enabled ?? true,
-    alwaysActive:
-      envAlwaysActive ?? settings.deferredTools?.alwaysActive ?? [...DEFAULT_ALWAYS_ACTIVE_TOOLS],
+    enabled: settings.deferredTools?.enabled ?? true,
+    alwaysActive: settings.deferredTools?.alwaysActive ?? [...DEFAULT_ALWAYS_ACTIVE_TOOLS],
+  };
+}
+
+/** Apply process-local overrides without contaminating persistence or the settings UI. */
+export function resolveDeferredToolsSettings(
+  settings = loadDeferredToolsSettings(),
+): ResolvedDeferredToolsSettings {
+  return {
+    enabled: parseBooleanEnv(process.env[DEFERRED_TOOLS_ENV]) ?? settings.enabled,
+    alwaysActive: parseAlwaysActiveEnv(process.env[ALWAYS_ACTIVE_TOOLS_ENV]) ?? settings.alwaysActive,
   };
 }
 
@@ -193,7 +200,7 @@ function rankTool(tool: ToolLike, query: string): number {
 
 export function applyDeferredToolDefaults(
   pi: ExtensionAPI,
-  settings = loadDeferredToolsSettings(),
+  settings = resolveDeferredToolsSettings(),
 ): string[] {
   if (typeof pi.setActiveTools !== 'function') {
     return pi.getActiveTools();
