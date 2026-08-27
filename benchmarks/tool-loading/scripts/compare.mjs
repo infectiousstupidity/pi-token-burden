@@ -119,14 +119,12 @@ for (const task of tasks) {
 
 const positiveTasks = taskMetrics.filter((metric) => metric.kind === 'positive' && !metric.weakProbe);
 const negativeTasks = taskMetrics.filter((metric) => metric.kind === 'negative');
-const positiveBaselineRuns = cases.filter(
+const positiveRuns = cases.filter(
   (run) => valid(run) && run.taskKind === 'positive' && !taskMetrics.find((metric) => metric.id === run.taskId)?.weakProbe,
 );
-const positiveDeferredRuns = cases.filter(
-  (run) => valid(run) && run.taskKind === 'positive' && run.mode === 'deferred' && !taskMetrics.find((metric) => metric.id === run.taskId)?.weakProbe,
-);
-const baselinePositiveOnly = positiveBaselineRuns.filter((run) => run.mode === 'baseline');
-const baselineHits = baselinePositiveOnly.filter((run) => run.targetHit);
+const baselinePositiveRuns = positiveRuns.filter((run) => run.mode === 'baseline');
+const deferredPositiveRuns = positiveRuns.filter((run) => run.mode === 'deferred');
+const baselineHits = baselinePositiveRuns.filter((run) => run.targetHit);
 let retainedHits = 0;
 for (const run of baselineHits) {
   const peer = byKey.get(`deferred:${run.taskId}:${String(run.repetition)}`);
@@ -135,7 +133,7 @@ for (const run of baselineHits) {
 
 const primaryRetention = baselineHits.length > 0 ? retainedHits / baselineHits.length : null;
 const deferredDiscoveryRate = rate(
-  positiveDeferredRuns.map((run) => run.targetHit && run.searchCalls > 0 && run.loaderBeforeTarget),
+  deferredPositiveRuns.map((run) => run.targetHit && run.searchCalls > 0 && run.loaderBeforeTarget),
 );
 const negativeDeferredRuns = cases.filter((run) => valid(run) && run.taskKind === 'negative' && run.mode === 'deferred');
 const negativeLoaderAvoidance = rate(negativeDeferredRuns.map((run) => run.searchCalls === 0));
@@ -153,15 +151,24 @@ const latencyDeltaPct =
 const preflight = existsSync(resolve(runDir, 'preflight.json'))
   ? JSON.parse(readFileSync(resolve(runDir, 'preflight.json'), 'utf8'))
   : null;
+const validCases = cases.filter(valid);
+const observedModels = [
+  ...new Set(
+    validCases.map((run) => `${run.provider ?? 'unknown'}/${run.model ?? 'unknown'}`),
+  ),
+].toSorted();
 
 const metrics = {
   version: 1,
   runId: basename(runDir),
   generatedAt: new Date().toISOString(),
   preflight,
+  observedModels,
+  modelConsistent: observedModels.length <= 1,
   counts: {
     cases: cases.length,
-    validCases: cases.filter(valid).length,
+    validCases: validCases.length,
+    invalidCases: cases.length - validCases.length,
     strongPositiveTasks: positiveTasks.length,
     weakPositiveTasks: taskMetrics.filter((metric) => metric.weakProbe).length,
     negativeTasks: negativeTasks.length,
@@ -186,6 +193,8 @@ const lines = [
   '# Tool-loading benchmark comparison',
   '',
   `Run: \`${metrics.runId}\``,
+  `Model: \`${observedModels.join(', ') || `${preflight?.actualProvider ?? 'unknown'}/${preflight?.actualModel ?? 'unknown'}`}\``,
+  `Valid cases: ${String(metrics.counts.validCases)}/${String(metrics.counts.cases)}`,
   '',
   '## Primary result',
   '',
@@ -222,8 +231,14 @@ lines.push(
   '- Negative controls should avoid `search_tools`; unnecessary searches are overhead.',
   '- Treat weak probes as task-design failures, not deferred-loader failures.',
   '- Token and latency deltas are secondary to reliability; compare them only after the same task/model/config has enough valid repetitions.',
-  '',
 );
+if (!metrics.modelConsistent) {
+  lines.push('- WARNING: multiple models were observed; do not treat this run as a clean A/B comparison.');
+}
+if (metrics.counts.invalidCases > 0) {
+  lines.push(`- WARNING: ${String(metrics.counts.invalidCases)} failed or timed-out cases were excluded.`);
+}
+lines.push('');
 
 writeFileSync(resolve(runDir, 'comparison.md'), `${lines.join('\n')}\n`, 'utf8');
 
@@ -233,13 +248,19 @@ if (hasFlag('--record')) {
     runId: metrics.runId,
     generatedAt: metrics.generatedAt,
     gitSha: preflight?.gitSha ?? null,
+    gitDirty: preflight?.gitDirty ?? null,
+    taskSuiteSha256: preflight?.taskSuiteSha256 ?? null,
+    benchmarkConfigSha256: preflight?.benchmarkConfigSha256 ?? null,
     piVersion: preflight?.piVersion ?? null,
+    provider: preflight?.actualProvider ?? null,
+    model: preflight?.actualModel ?? null,
     pairedDiscoveryRetention: primaryRetention,
     deferredDiscoveryRate,
     negativeControlLoaderAvoidance: negativeLoaderAvoidance,
     reportedTokenDeltaPct: tokenDeltaPct,
     latencyDeltaPct,
     validCases: metrics.counts.validCases,
+    invalidCases: metrics.counts.invalidCases,
   };
   appendFileSync(historyPath, `${JSON.stringify(historyEntry)}\n`, 'utf8');
 }
