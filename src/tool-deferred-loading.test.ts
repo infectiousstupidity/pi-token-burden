@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { fromPartial } from '@total-typescript/shoehorn';
 
@@ -105,7 +107,6 @@ describe('deferred tool loading', () => {
       });
     } finally {
       process.env.PI_CODING_AGENT_DIR = oldDir;
-      const fs = require('node:fs') as typeof import('node:fs');
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
