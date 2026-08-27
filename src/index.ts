@@ -180,6 +180,12 @@ const EXTENSION: ExtensionFactory = (pi) => {
         return;
       }
 
+      if (args.trim() === 'tools') {
+        const { runToolDefaults } = await import('./runToolDefaults.js');
+        await runToolDefaults(pi, ctx);
+        return;
+      }
+
       const { runTokenBurden } = await import('./runTokenBurden.js');
       await runTokenBurden(pi, args, ctx);
     },
