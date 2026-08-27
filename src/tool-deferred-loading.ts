@@ -167,8 +167,14 @@ export function applyDeferredToolDefaults(
   pi: ExtensionAPI,
   settings = loadDeferredToolsSettings(),
 ): string[] {
-  if (!settings.enabled || typeof pi.setActiveTools !== 'function') {
+  if (typeof pi.setActiveTools !== 'function') {
     return pi.getActiveTools();
+  }
+
+  if (!settings.enabled) {
+    const active = pi.getActiveTools().filter((name) => name !== TOOL_SEARCH_NAME);
+    pi.setActiveTools(active);
+    return active;
   }
 
   const available = new Set(pi.getAllTools().map((tool) => tool.name));
