@@ -170,18 +170,19 @@ export function applyDeferredToolDefaults(
     return pi.getActiveTools();
   }
 
+  const available = pi.getAllTools().map((tool) => tool.name);
   if (!settings.enabled) {
-    const active = pi.getActiveTools().filter((name) => name !== TOOL_SEARCH_NAME);
+    const active = available.filter((name) => name !== TOOL_SEARCH_NAME);
     pi.setActiveTools(active);
     return active;
   }
 
-  const available = new Set(pi.getAllTools().map((tool) => tool.name));
+  const availableSet = new Set(available);
   const active = [
     TOOL_SEARCH_NAME,
-    ...settings.alwaysActive.filter((name) => available.has(name)),
+    ...settings.alwaysActive.filter((name) => availableSet.has(name)),
   ];
-  const uniqueActive = [...new Set(active)].filter((name) => available.has(name));
+  const uniqueActive = [...new Set(active)].filter((name) => availableSet.has(name));
   pi.setActiveTools(uniqueActive);
   return uniqueActive;
 }
