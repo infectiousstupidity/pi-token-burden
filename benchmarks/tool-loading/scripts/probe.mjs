@@ -70,6 +70,19 @@ function runProcess(command, args, options) {
   });
 }
 
+const gitSha = spawnSync('git', ['rev-parse', 'HEAD'], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+}).stdout?.trim();
+const gitStatus = spawnSync('git', ['status', '--porcelain=v1'], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+}).stdout ?? '';
+const gitDiff = spawnSync('git', ['diff', '--binary', 'HEAD'], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+}).stdout ?? '';
+
 const runDir = resolve(arg('--run-dir', resolve(benchDir, 'results', runIdNow())));
 mkdirSync(runDir, { recursive: true });
 const piBin = arg('--pi', config.piBin ?? 'pi');
@@ -158,18 +171,6 @@ for (const task of tasks) {
   }
 }
 
-const gitSha = spawnSync('git', ['rev-parse', 'HEAD'], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-}).stdout?.trim();
-const gitStatus = spawnSync('git', ['status', '--porcelain=v1'], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-}).stdout ?? '';
-const gitDiff = spawnSync('git', ['diff', '--binary', 'HEAD'], {
-  cwd: repoRoot,
-  encoding: 'utf8',
-}).stdout ?? '';
 const piVersion = spawnSync(piBin, ['--version'], { encoding: 'utf8' }).stdout?.trim();
 
 const preflight = {
