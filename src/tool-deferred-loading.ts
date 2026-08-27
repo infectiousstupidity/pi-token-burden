@@ -167,7 +167,7 @@ export function applyDeferredToolDefaults(
   pi: ExtensionAPI,
   settings = loadDeferredToolsSettings(),
 ): string[] {
-  if (!settings.enabled) {
+  if (!settings.enabled || typeof pi.setActiveTools !== 'function') {
     return pi.getActiveTools();
   }
 
@@ -182,6 +182,10 @@ export function applyDeferredToolDefaults(
 }
 
 export function registerDeferredToolSearch(pi: ExtensionAPI): void {
+  if (typeof pi.registerTool !== 'function' || typeof pi.setActiveTools !== 'function') {
+    return;
+  }
+
   pi.registerTool({
     name: TOOL_SEARCH_NAME,
     label: 'Search Tools',
