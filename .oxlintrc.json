@@ -105,9 +105,18 @@
       }
     },
     {
-      "files": ["scripts/compare-tokenizers.ts"],
+      "files": ["scripts/compare-tokenizers.ts", "benchmarks/tool-loading/scripts/*.mjs"],
       "rules": {
-        "no-console": "off"
+        "no-console": "off",
+        "@factory/require-test-files": "off"
+      }
+    },
+    {
+      "files": ["benchmarks/tool-loading/inventory-extension.ts"],
+      "rules": {
+        "import/no-default-export": "off",
+        "@factory/require-test-files": "off",
+        "@factory/filename-match-export": "off"
       }
     },
     {
