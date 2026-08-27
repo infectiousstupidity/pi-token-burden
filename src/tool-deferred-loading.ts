@@ -11,8 +11,7 @@ export const TOOL_SEARCH_NAME = 'search_tools';
 export const DEFAULT_ALWAYS_ACTIVE_TOOLS = ['read', 'bash', 'edit', 'write'] as const;
 
 const SETTINGS_KEY = 'pi-token-burden';
-const DEFAULT_SEARCH_LIMIT = 5;
-const MAX_SEARCH_LIMIT = 8;
+const SEARCH_LIMIT = 5;
 
 interface DeferredToolsSettings {
   enabled?: boolean;
@@ -195,19 +194,9 @@ export function registerDeferredToolSearch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TOOL_SEARCH_NAME,
     label: 'Search Tools',
-    description:
-      'Search currently deferred Pi tools by capability and activate the best matches for this session. Use this when the task needs a tool that is not currently available.',
+    description: 'Find and activate deferred tools when a needed capability is unavailable.',
     parameters: Type.Object({
-      query: Type.String({
-        description: 'Capability to find, for example "typescript diagnostics" or "web search".',
-      }),
-      limit: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: MAX_SEARCH_LIMIT,
-          description: `Maximum tools to activate (default ${String(DEFAULT_SEARCH_LIMIT)}).`,
-        }),
-      ),
+      query: Type.String({ description: 'Capability to find.' }),
     }),
     execute: async (_toolCallId, params) => {
       const activeNames = new Set(pi.getActiveTools());
@@ -221,15 +210,14 @@ export function registerDeferredToolSearch(pi: ExtensionAPI): void {
         .filter((entry) => entry.score > 0)
         .toSorted((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
 
-      const limit = params.limit ?? DEFAULT_SEARCH_LIMIT;
-      const selected = candidates.slice(0, limit).map((entry) => entry.tool);
+      const selected = candidates.slice(0, SEARCH_LIMIT).map((entry) => entry.tool);
 
       if (selected.length === 0) {
         return {
           content: [
             {
               type: 'text' as const,
-              text: `No deferred tools matched "${params.query}". Try a broader capability query.`,
+              text: `No deferred tools matched "${params.query}". Try a broader query.`,
             },
           ],
           details: { query: params.query, activated: [] },
