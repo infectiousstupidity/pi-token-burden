@@ -69,7 +69,7 @@
       "kind": "negative",
       "targetTools": [],
       "optional": false,
-      "prompt": "Run git status --short and report only whether the working tree is clean or dirty. Do not use any specialist repository-analysis capability."
+      "prompt": "Run node --version and report only the version string. Do not use any specialist analysis or internet capability."
     }
   ]
 }
