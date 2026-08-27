@@ -106,7 +106,11 @@ describe('deferred tool loading', () => {
         alwaysActive: ['edit', 'read'],
       });
     } finally {
-      process.env.PI_CODING_AGENT_DIR = oldDir;
+      if (oldDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = oldDir;
+      }
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
