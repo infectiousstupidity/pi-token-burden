@@ -44,11 +44,11 @@ function runProcess(command, args, options) {
 
 const runDir = resolve(arg('--run-dir', resolve(benchDir, 'results', runIdNow())));
 mkdirSync(runDir, { recursive: true });
-const inventoryPath = resolve(runDir, 'inventory.json');
 const piBin = arg('--pi', config.piBin ?? 'pi');
 const model = arg('--model', config.model ?? null);
 const thinking = arg('--thinking', config.thinking ?? null);
 const extensionPath = resolve(benchDir, 'inventory-extension.ts');
+const alwaysActive = config.alwaysActive ?? ['read', 'bash', 'edit', 'write'];
 
 const piArgs = ['--mode', 'json', '--no-session', '--approve', '-e', extensionPath];
 if (model) {
@@ -59,31 +59,60 @@ if (thinking) {
 }
 piArgs.push('--', 'Reply exactly OK.');
 
-const startedAt = new Date().toISOString();
-const result = await runProcess(piBin, piArgs, {
-  cwd: repoRoot,
-  env: {
-    ...process.env,
-    PI_TOKEN_BURDEN_DEFERRED_TOOLS: '0',
-    PI_TOKEN_BURDEN_ALWAYS_ACTIVE: (config.alwaysActive ?? ['read', 'bash', 'edit', 'write']).join(','),
-    PI_TOOL_BENCH_INVENTORY_PATH: inventoryPath,
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
+async function probeMode(mode) {
+  const inventoryPath = resolve(runDir, `inventory-${mode}.json`);
+  const result = await runProcess(piBin, piArgs, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PI_TOKEN_BURDEN_DEFERRED_TOOLS: mode === 'deferred' ? '1' : '0',
+      PI_TOKEN_BURDEN_ALWAYS_ACTIVE: alwaysActive.join(','),
+      PI_TOOL_BENCH_INVENTORY_PATH: inventoryPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
-writeFileSync(resolve(runDir, 'preflight.stdout.jsonl'), result.stdout, 'utf8');
-writeFileSync(resolve(runDir, 'preflight.stderr.log'), result.stderr, 'utf8');
+  writeFileSync(resolve(runDir, `preflight-${mode}.stdout.jsonl`), result.stdout, 'utf8');
+  writeFileSync(resolve(runDir, `preflight-${mode}.stderr.log`), result.stderr, 'utf8');
 
-if (result.code !== 0 || !existsSync(inventoryPath)) {
-  console.error(`Preflight failed (exit ${String(result.code)}). See ${runDir}`);
-  process.exit(result.code || 1);
+  if (result.code !== 0 || !existsSync(inventoryPath)) {
+    throw new Error(`${mode} probe failed (exit ${String(result.code)})`);
+  }
+  return JSON.parse(readFileSync(inventoryPath, 'utf8'));
 }
 
-const inventory = JSON.parse(readFileSync(inventoryPath, 'utf8'));
-const availableNames = new Set(inventory.allTools.map((tool) => tool.name));
+const startedAt = new Date().toISOString();
+let baselineInventory;
+let deferredInventory;
+try {
+  baselineInventory = await probeMode('baseline');
+  deferredInventory = await probeMode('deferred');
+} catch (error) {
+  console.error(`Preflight failed: ${error instanceof Error ? error.message : String(error)}. See ${runDir}`);
+  process.exit(1);
+}
+
+const baselineAll = baselineInventory.allTools.map((tool) => tool.name).toSorted();
+const deferredAll = deferredInventory.allTools.map((tool) => tool.name).toSorted();
+const baselineActive = baselineInventory.activeTools.toSorted();
+const deferredActive = deferredInventory.activeTools.toSorted();
+const expectedDeferred = [
+  'search_tools',
+  ...alwaysActive.filter((name) => deferredAll.includes(name)),
+].filter((name, index, values) => values.indexOf(name) === index).toSorted();
+const expectedBaseline = baselineAll.filter((name) => name !== 'search_tools');
+
+const invariants = {
+  sameToolCatalog: JSON.stringify(baselineAll) === JSON.stringify(deferredAll),
+  searchToolRegistered: baselineAll.includes('search_tools'),
+  baselineHasAllNonLoaderTools: JSON.stringify(baselineActive) === JSON.stringify(expectedBaseline),
+  deferredHasOnlyCorePlusLoader: JSON.stringify(deferredActive) === JSON.stringify(expectedDeferred),
+};
+const preflightOk = Object.values(invariants).every(Boolean);
+
+const availableNames = new Set(baselineAll);
 const runnableTasks = [];
 const skippedTasks = [];
-
 for (const task of tasks) {
   if (task.kind === 'negative' || task.targetTools.some((name) => availableNames.has(name))) {
     runnableTasks.push(task.id);
@@ -104,6 +133,7 @@ const piVersion = spawnSync(piBin, ['--version'], { encoding: 'utf8' }).stdout?.
 
 const preflight = {
   version: 1,
+  ok: preflightOk,
   startedAt,
   completedAt: new Date().toISOString(),
   repoRoot,
@@ -111,8 +141,11 @@ const preflight = {
   piVersion: piVersion || null,
   requestedModel: model,
   requestedThinking: thinking,
-  allToolCount: inventory.allTools.length,
-  activeToolCountBaseline: inventory.activeTools.length,
+  alwaysActive,
+  invariants,
+  allToolCount: baselineAll.length,
+  baselineActiveTools: baselineActive,
+  deferredActiveTools: deferredActive,
   runnableTasks,
   skippedTasks,
 };
@@ -122,4 +155,8 @@ console.log(runDir);
 console.log(`Runnable tasks: ${runnableTasks.join(', ')}`);
 if (skippedTasks.length > 0) {
   console.log(`Skipped: ${skippedTasks.map((task) => task.id).join(', ')}`);
+}
+if (!preflightOk) {
+  console.error(`Preflight invariants failed: ${JSON.stringify(invariants)}`);
+  process.exit(1);
 }
