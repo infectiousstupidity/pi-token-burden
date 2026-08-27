@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,8 +8,12 @@ import { fileURLToPath } from 'node:url';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const benchDir = resolve(scriptDir, '..');
 const repoRoot = resolve(benchDir, '../..');
-const config = JSON.parse(readFileSync(resolve(benchDir, 'benchmark.json'), 'utf8'));
-const tasks = JSON.parse(readFileSync(resolve(benchDir, 'tasks.json'), 'utf8')).tasks;
+const configPath = resolve(benchDir, 'benchmark.json');
+const tasksPath = resolve(benchDir, 'tasks.json');
+const configText = readFileSync(configPath, 'utf8');
+const tasksText = readFileSync(tasksPath, 'utf8');
+const config = JSON.parse(configText);
+const tasks = JSON.parse(tasksText).tasks;
 
 function arg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -17,6 +22,29 @@ function arg(name, fallback) {
 
 function runIdNow() {
   return new Date().toISOString().replaceAll(':', '-').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function extractRuntime(stdout) {
+  let provider = null;
+  let model = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event?.type !== 'message_end' || event.message?.role !== 'assistant') continue;
+    if (typeof event.message.provider === 'string') provider = event.message.provider;
+    if (typeof event.message.responseModel === 'string') model = event.message.responseModel;
+    else if (typeof event.message.model === 'string') model = event.message.model;
+  }
+  return { provider, model };
 }
 
 function runProcess(command, args, options) {
@@ -78,24 +106,27 @@ async function probeMode(mode) {
   if (result.code !== 0 || !existsSync(inventoryPath)) {
     throw new Error(`${mode} probe failed (exit ${String(result.code)})`);
   }
-  return JSON.parse(readFileSync(inventoryPath, 'utf8'));
+  return {
+    inventory: JSON.parse(readFileSync(inventoryPath, 'utf8')),
+    runtime: extractRuntime(result.stdout),
+  };
 }
 
 const startedAt = new Date().toISOString();
-let baselineInventory;
-let deferredInventory;
+let baselineProbe;
+let deferredProbe;
 try {
-  baselineInventory = await probeMode('baseline');
-  deferredInventory = await probeMode('deferred');
+  baselineProbe = await probeMode('baseline');
+  deferredProbe = await probeMode('deferred');
 } catch (error) {
   console.error(`Preflight failed: ${error instanceof Error ? error.message : String(error)}. See ${runDir}`);
   process.exit(1);
 }
 
-const baselineAll = baselineInventory.allTools.map((tool) => tool.name).toSorted();
-const deferredAll = deferredInventory.allTools.map((tool) => tool.name).toSorted();
-const baselineActive = baselineInventory.activeTools.toSorted();
-const deferredActive = deferredInventory.activeTools.toSorted();
+const baselineAll = baselineProbe.inventory.allTools.map((tool) => tool.name).toSorted();
+const deferredAll = deferredProbe.inventory.allTools.map((tool) => tool.name).toSorted();
+const baselineActive = baselineProbe.inventory.activeTools.toSorted();
+const deferredActive = deferredProbe.inventory.activeTools.toSorted();
 const expectedDeferred = [
   'search_tools',
   ...alwaysActive.filter((name) => deferredAll.includes(name)),
@@ -107,6 +138,8 @@ const invariants = {
   searchToolRegistered: baselineAll.includes('search_tools'),
   baselineHasAllNonLoaderTools: JSON.stringify(baselineActive) === JSON.stringify(expectedBaseline),
   deferredHasOnlyCorePlusLoader: JSON.stringify(deferredActive) === JSON.stringify(expectedDeferred),
+  sameProvider: baselineProbe.runtime.provider === deferredProbe.runtime.provider,
+  sameModel: baselineProbe.runtime.model === deferredProbe.runtime.model,
 };
 const preflightOk = Object.values(invariants).every(Boolean);
 
@@ -129,6 +162,14 @@ const gitSha = spawnSync('git', ['rev-parse', 'HEAD'], {
   cwd: repoRoot,
   encoding: 'utf8',
 }).stdout?.trim();
+const gitStatus = spawnSync('git', ['status', '--porcelain=v1'], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+}).stdout ?? '';
+const gitDiff = spawnSync('git', ['diff', '--binary', 'HEAD'], {
+  cwd: repoRoot,
+  encoding: 'utf8',
+}).stdout ?? '';
 const piVersion = spawnSync(piBin, ['--version'], { encoding: 'utf8' }).stdout?.trim();
 
 const preflight = {
@@ -138,9 +179,15 @@ const preflight = {
   completedAt: new Date().toISOString(),
   repoRoot,
   gitSha: gitSha || null,
+  gitDirty: gitStatus.trim().length > 0,
+  gitDiffSha256: gitDiff ? sha256(gitDiff) : null,
+  taskSuiteSha256: sha256(tasksText),
+  benchmarkConfigSha256: sha256(configText),
   piVersion: piVersion || null,
   requestedModel: model,
   requestedThinking: thinking,
+  actualProvider: baselineProbe.runtime.provider,
+  actualModel: baselineProbe.runtime.model,
   alwaysActive,
   invariants,
   allToolCount: baselineAll.length,
@@ -152,6 +199,7 @@ const preflight = {
 writeFileSync(resolve(runDir, 'preflight.json'), JSON.stringify(preflight, null, 2), 'utf8');
 
 console.log(runDir);
+console.log(`Model: ${preflight.actualProvider ?? 'unknown'}/${preflight.actualModel ?? 'unknown'}`);
 console.log(`Runnable tasks: ${runnableTasks.join(', ')}`);
 if (skippedTasks.length > 0) {
   console.log(`Skipped: ${skippedTasks.map((task) => task.id).join(', ')}`);
