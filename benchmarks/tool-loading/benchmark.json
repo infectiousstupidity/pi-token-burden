@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "repetitions": 5,
+  "maxParallelAgents": 3,
+  "piBin": "pi",
+  "model": null,
+  "thinking": null,
+  "timeoutMs": 300000,
+  "alwaysActive": ["read", "bash", "edit", "write"]
+}

@@ -4,10 +4,14 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { fromPartial } from '@total-typescript/shoehorn';
 
 import {
+  ALWAYS_ACTIVE_TOOLS_ENV,
   applyDeferredToolDefaults,
+  DEFERRED_TOOLS_ENV,
   loadDeferredToolsSettings,
   registerDeferredToolSearch,
+  resolveDeferredToolsSettings,
   saveDefaultActiveTools,
+  saveDeferredToolsSettings,
   TOOL_SEARCH_NAME,
 } from './tool-deferred-loading.js';
 
@@ -61,9 +65,18 @@ const tools: TestTool[] = [
   { name: 'edit', description: 'Edit files', parameters: {} },
   { name: 'write', description: 'Write files', parameters: {} },
   { name: TOOL_SEARCH_NAME, description: 'Search deferred tools', parameters: {} },
-  { name: 'lens_diagnostics', description: 'TypeScript diagnostics and compiler errors', parameters: {} },
+  {
+    name: 'lens_diagnostics',
+    description: 'TypeScript diagnostics and compiler errors',
+    parameters: {},
+  },
   { name: 'web_search', description: 'Search the web', parameters: {} },
 ];
+
+afterEach(() => {
+  delete process.env[DEFERRED_TOOLS_ENV];
+  delete process.env[ALWAYS_ACTIVE_TOOLS_ENV];
+});
 
 describe('deferred tool loading', () => {
   it('starts with core tools plus the loader only', () => {
@@ -111,6 +124,36 @@ describe('deferred tool loading', () => {
       } else {
         process.env.PI_CODING_AGENT_DIR = oldDir;
       }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies benchmark env vars only to runtime resolution', () => {
+    const tempDir = `${process.cwd()}/.tmp-token-burden-env-${String(process.pid)}`;
+    const settingsPath = `${tempDir}/settings.json`;
+
+    try {
+      saveDeferredToolsSettings({ enabled: false, alwaysActive: ['web_search'] }, settingsPath);
+      process.env[DEFERRED_TOOLS_ENV] = '1';
+      process.env[ALWAYS_ACTIVE_TOOLS_ENV] = 'read,bash,read';
+
+      const persisted = loadDeferredToolsSettings(settingsPath);
+      expect(persisted).toEqual({
+        enabled: false,
+        alwaysActive: ['web_search'],
+      });
+      expect(resolveDeferredToolsSettings(persisted)).toEqual({
+        enabled: true,
+        alwaysActive: ['read', 'bash'],
+      });
+
+      delete process.env[DEFERRED_TOOLS_ENV];
+      delete process.env[ALWAYS_ACTIVE_TOOLS_ENV];
+      expect(resolveDeferredToolsSettings(loadDeferredToolsSettings(settingsPath))).toEqual({
+        enabled: false,
+        alwaysActive: ['web_search'],
+      });
+    } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });

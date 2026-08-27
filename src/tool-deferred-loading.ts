@@ -9,6 +9,8 @@ import type { Settings } from './types.js';
 
 export const TOOL_SEARCH_NAME = 'search_tools';
 export const DEFAULT_ALWAYS_ACTIVE_TOOLS = ['read', 'bash', 'edit', 'write'] as const;
+export const DEFERRED_TOOLS_ENV = 'PI_TOKEN_BURDEN_DEFERRED_TOOLS';
+export const ALWAYS_ACTIVE_TOOLS_ENV = 'PI_TOKEN_BURDEN_ALWAYS_ACTIVE';
 
 const SETTINGS_KEY = 'pi-token-burden';
 const SEARCH_LIMIT = 5;
@@ -82,6 +84,30 @@ function decodeTokenBurdenSettings(settings: Settings): TokenBurdenSettings {
   };
 }
 
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function parseAlwaysActiveEnv(value: string | undefined): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return [...new Set(value.split(',').map((name) => name.trim()).filter(Boolean))];
+}
+
+/** Load only durable user settings. Runtime benchmark overrides are intentionally excluded. */
 export function loadDeferredToolsSettings(
   settingsPath = getPiSettingsPath(),
 ): ResolvedDeferredToolsSettings {
@@ -89,6 +115,16 @@ export function loadDeferredToolsSettings(
   return {
     enabled: settings.deferredTools?.enabled ?? true,
     alwaysActive: settings.deferredTools?.alwaysActive ?? [...DEFAULT_ALWAYS_ACTIVE_TOOLS],
+  };
+}
+
+/** Apply process-local overrides without contaminating persistence or the settings UI. */
+export function resolveDeferredToolsSettings(
+  settings = loadDeferredToolsSettings(),
+): ResolvedDeferredToolsSettings {
+  return {
+    enabled: parseBooleanEnv(process.env[DEFERRED_TOOLS_ENV]) ?? settings.enabled,
+    alwaysActive: parseAlwaysActiveEnv(process.env[ALWAYS_ACTIVE_TOOLS_ENV]) ?? settings.alwaysActive,
   };
 }
 
@@ -164,7 +200,7 @@ function rankTool(tool: ToolLike, query: string): number {
 
 export function applyDeferredToolDefaults(
   pi: ExtensionAPI,
-  settings = loadDeferredToolsSettings(),
+  settings = resolveDeferredToolsSettings(),
 ): string[] {
   if (typeof pi.setActiveTools !== 'function') {
     return pi.getActiveTools();
