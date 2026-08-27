@@ -33,6 +33,14 @@ export interface ResolvedDeferredToolsSettings {
   alwaysActive: string[];
 }
 
+// Some Pi package releases expose this at runtime before their published type
+// declarations catch up. Keep the extension source compatible with both.
+declare module '@mariozechner/pi-coding-agent' {
+  interface ExtensionAPI {
+    setActiveTools(toolNames: string[]): void;
+  }
+}
+
 function getAgentDir(): string {
   const envDir = process.env.PI_CODING_AGENT_DIR;
   if (envDir) {
@@ -51,19 +59,18 @@ export function getPiSettingsPath(): string {
   return path.join(getAgentDir(), 'settings.json');
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 function decodeTokenBurdenSettings(settings: Settings): TokenBurdenSettings {
-  const raw = settings[SETTINGS_KEY];
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return {};
-  }
+  const raw = asRecord(settings[SETTINGS_KEY]);
+  const deferredRaw = asRecord(raw.deferredTools);
 
-  const deferredRaw = Reflect.get(raw, 'deferredTools');
-  if (!deferredRaw || typeof deferredRaw !== 'object' || Array.isArray(deferredRaw)) {
-    return {};
-  }
-
-  const enabled = Reflect.get(deferredRaw, 'enabled');
-  const alwaysActive = Reflect.get(deferredRaw, 'alwaysActive');
+  const enabled = deferredRaw.enabled;
+  const alwaysActive = deferredRaw.alwaysActive;
 
   return {
     deferredTools: {
@@ -91,10 +98,11 @@ export function saveDeferredToolsSettings(
   settingsPath = getPiSettingsPath(),
 ): void {
   const settings = loadSettings(settingsPath);
-  const existing = decodeTokenBurdenSettings(settings);
+  const existing = asRecord(settings[SETTINGS_KEY]);
   settings[SETTINGS_KEY] = {
     ...existing,
     deferredTools: {
+      ...asRecord(existing.deferredTools),
       enabled: value.enabled,
       alwaysActive: [...new Set(value.alwaysActive)].toSorted(),
     },
