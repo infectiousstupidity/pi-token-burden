@@ -1,4 +1,4 @@
 */raw/
 */cases/
-*/preflight.stdout.jsonl
-*/preflight.stderr.log
+*/preflight-*.stdout.jsonl
+*/preflight-*.stderr.log
