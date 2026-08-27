@@ -1,6 +1,7 @@
 import type { ExtensionContext, ExtensionFactory } from '@mariozechner/pi-coding-agent';
 
 import { AtelierSidebar, buildAtelierSidebarRows } from './atelier-sidebar.js';
+import { applyDeferredToolDefaults, registerDeferredToolSearch } from './tool-deferred-loading.js';
 import type { ParsedPrompt } from './types.js';
 import { isRecord } from './utils.js';
 
@@ -36,6 +37,8 @@ const EXTENSION: ExtensionFactory = (pi) => {
   let measurementCache: SidebarMeasurementCache | undefined;
   let pendingRefresh: PendingSidebarRefresh | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  registerDeferredToolSearch(pi);
 
   const publishSidebar = async (ctx: ExtensionContext, prompt: string): Promise<void> => {
     if (agentActive || !ctx.isIdle()) {
@@ -141,6 +144,7 @@ const EXTENSION: ExtensionFactory = (pi) => {
     measurementCache = undefined;
     pendingRefresh = undefined;
     cancelRefresh();
+    applyDeferredToolDefaults(pi);
     if (atelierDiscovered) {
       scheduleCurrentPrompt(ctx);
     }
@@ -170,7 +174,7 @@ const EXTENSION: ExtensionFactory = (pi) => {
   });
 
   pi.registerCommand('token-burden', {
-    description: 'Show token budget breakdown and manage skills',
+    description: 'Show token budget breakdown and manage skills/tools',
     handler: async (args, ctx) => {
       if (!ctx.hasUI) {
         return;
