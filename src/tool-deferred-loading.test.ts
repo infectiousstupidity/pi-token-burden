@@ -4,10 +4,13 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import { fromPartial } from '@total-typescript/shoehorn';
 
 import {
+  ALWAYS_ACTIVE_TOOLS_ENV,
   applyDeferredToolDefaults,
+  DEFERRED_TOOLS_ENV,
   loadDeferredToolsSettings,
   registerDeferredToolSearch,
   saveDefaultActiveTools,
+  saveDeferredToolsSettings,
   TOOL_SEARCH_NAME,
 } from './tool-deferred-loading.js';
 
@@ -65,6 +68,11 @@ const tools: TestTool[] = [
   { name: 'web_search', description: 'Search the web', parameters: {} },
 ];
 
+afterEach(() => {
+  delete process.env[DEFERRED_TOOLS_ENV];
+  delete process.env[ALWAYS_ACTIVE_TOOLS_ENV];
+});
+
 describe('deferred tool loading', () => {
   it('starts with core tools plus the loader only', () => {
     const { pi, active } = createPi(tools, tools.map((tool) => tool.name));
@@ -111,6 +119,34 @@ describe('deferred tool loading', () => {
       } else {
         process.env.PI_CODING_AGENT_DIR = oldDir;
       }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets benchmark env vars override persisted settings without rewriting them', () => {
+    const tempDir = `${process.cwd()}/.tmp-token-burden-env-${String(process.pid)}`;
+    const settingsPath = `${tempDir}/settings.json`;
+
+    try {
+      saveDeferredToolsSettings(
+        { enabled: false, alwaysActive: ['web_search'] },
+        settingsPath,
+      );
+      process.env[DEFERRED_TOOLS_ENV] = '1';
+      process.env[ALWAYS_ACTIVE_TOOLS_ENV] = 'read,bash,read';
+
+      expect(loadDeferredToolsSettings(settingsPath)).toEqual({
+        enabled: true,
+        alwaysActive: ['read', 'bash'],
+      });
+
+      delete process.env[DEFERRED_TOOLS_ENV];
+      delete process.env[ALWAYS_ACTIVE_TOOLS_ENV];
+      expect(loadDeferredToolsSettings(settingsPath)).toEqual({
+        enabled: false,
+        alwaysActive: ['web_search'],
+      });
+    } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
