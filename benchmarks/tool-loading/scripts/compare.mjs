@@ -55,6 +55,10 @@ function valid(run) {
   return run.exitCode === 0 && !run.timedOut;
 }
 
+function targetActivated(run) {
+  return (run.targetTools ?? []).some((target) => (run.activatedTools ?? []).includes(target));
+}
+
 const runDirArg = arg('--run-dir');
 if (!runDirArg) {
   console.error('Usage: node compare.mjs --run-dir <dir> [--record]');
@@ -81,6 +85,10 @@ for (const task of tasks) {
 
   const baselineTarget = task.kind === 'positive' ? rate(baseline.map((run) => run.targetHit)) : null;
   const deferredTarget = task.kind === 'positive' ? rate(deferred.map((run) => run.targetHit)) : null;
+  const deferredActivation = task.kind === 'positive' ? rate(deferred.map(targetActivated)) : null;
+  const activatedDeferred = task.kind === 'positive' ? deferred.filter(targetActivated) : [];
+  const postActivationUse =
+    task.kind === 'positive' ? rate(activatedDeferred.map((run) => run.targetHit)) : null;
   const deferredDiscovery =
     task.kind === 'positive'
       ? rate(deferred.map((run) => run.targetHit && run.searchCalls > 0 && run.loaderBeforeTarget))
@@ -102,6 +110,8 @@ for (const task of tasks) {
     runs: { baseline: baseline.length, deferred: deferred.length },
     baselineTargetRate: baselineTarget,
     deferredTargetRate: deferredTarget,
+    deferredActivationRate: deferredActivation,
+    postActivationUseRate: postActivationUse,
     deferredDiscoveryRate: deferredDiscovery,
     pairedRetention,
     baselineLoaderFreeRate: baselineLoaderFree,
@@ -132,6 +142,9 @@ for (const run of baselineHits) {
 }
 
 const primaryRetention = baselineHits.length > 0 ? retainedHits / baselineHits.length : null;
+const deferredActivationRate = rate(deferredPositiveRuns.map(targetActivated));
+const activatedPositiveRuns = deferredPositiveRuns.filter(targetActivated);
+const postActivationUseRate = rate(activatedPositiveRuns.map((run) => run.targetHit));
 const deferredDiscoveryRate = rate(
   deferredPositiveRuns.map((run) => run.targetHit && run.searchCalls > 0 && run.loaderBeforeTarget),
 );
@@ -153,9 +166,7 @@ const preflight = existsSync(resolve(runDir, 'preflight.json'))
   : null;
 const validCases = cases.filter(valid);
 const observedModels = [
-  ...new Set(
-    validCases.map((run) => `${run.provider ?? 'unknown'}/${run.model ?? 'unknown'}`),
-  ),
+  ...new Set(validCases.map((run) => `${run.provider ?? 'unknown'}/${run.model ?? 'unknown'}`)),
 ].toSorted();
 
 const metrics = {
@@ -175,6 +186,8 @@ const metrics = {
   },
   primary: {
     pairedDiscoveryRetention: primaryRetention,
+    targetActivationRate: deferredActivationRate,
+    postActivationUseRate,
     deferredDiscoveryRate,
     negativeControlLoaderAvoidance: negativeLoaderAvoidance,
     baselineAvgReportedTokens: baselineAvgTokens,
@@ -199,7 +212,9 @@ const lines = [
   '## Primary result',
   '',
   `- Paired discovery retention: **${pct(primaryRetention)}**`,
-  `- Deferred discovery success: **${pct(deferredDiscoveryRate)}**`,
+  `- Search resolved the target tool: **${pct(deferredActivationRate)}**`,
+  `- Target used after activation: **${pct(postActivationUseRate)}**`,
+  `- End-to-end deferred discovery success: **${pct(deferredDiscoveryRate)}**`,
   `- Negative-control loader avoidance: **${pct(negativeLoaderAvoidance)}**`,
   `- Reported token delta: **${pct(tokenDeltaPct)}** (${num(baselineAvgTokens)} baseline -> ${num(deferredAvgTokens)} deferred)`,
   `- Wall-clock latency delta: **${pct(latencyDeltaPct)}** (${num(baselineAvgDurationMs)} ms -> ${num(deferredAvgDurationMs)} ms)`,
@@ -208,18 +223,20 @@ const lines = [
   '',
   '## Per task',
   '',
-  '| Task | Baseline target | Deferred target | Deferred discovery | Paired retention | Tokens B/D | Latency B/D | Note |',
+  '| Task | Baseline target | Deferred target | Search resolved | Post-activation use | Paired retention | Tokens B/D | Note |',
   '|---|---:|---:|---:|---:|---:|---:|---|',
 ];
 
 for (const metric of taskMetrics) {
   const targetBaseline = metric.kind === 'positive' ? pct(metric.baselineTargetRate) : 'control';
   const targetDeferred = metric.kind === 'positive' ? pct(metric.deferredTargetRate) : 'control';
-  const discovery = metric.kind === 'positive' ? pct(metric.deferredDiscoveryRate) : pct(metric.deferredLoaderFreeRate);
+  const activation =
+    metric.kind === 'positive' ? pct(metric.deferredActivationRate) : pct(metric.deferredLoaderFreeRate);
+  const afterActivation = metric.kind === 'positive' ? pct(metric.postActivationUseRate) : 'n/a';
   const retention = metric.kind === 'positive' ? pct(metric.pairedRetention) : 'n/a';
   const note = metric.weakProbe ? 'weak probe: baseline rarely used target' : '';
   lines.push(
-    `| ${metric.id} | ${targetBaseline} | ${targetDeferred} | ${discovery} | ${retention} | ${num(metric.baselineAvgTokens)}/${num(metric.deferredAvgTokens)} | ${num(metric.baselineAvgDurationMs)}/${num(metric.deferredAvgDurationMs)} ms | ${note} |`,
+    `| ${metric.id} | ${targetBaseline} | ${targetDeferred} | ${activation} | ${afterActivation} | ${retention} | ${num(metric.baselineAvgTokens)}/${num(metric.deferredAvgTokens)} | ${note} |`,
   );
 }
 
@@ -228,6 +245,8 @@ lines.push(
   '## Interpretation',
   '',
   '- Reliability is good when paired discovery retention stays near 100%.',
+  '- Low search-resolution rate points at `search_tools` ranking/query matching.',
+  '- High search resolution but low post-activation use means the model sees the loaded tool but does not choose it.',
   '- Negative controls should avoid `search_tools`; unnecessary searches are overhead.',
   '- Treat weak probes as task-design failures, not deferred-loader failures.',
   '- Token and latency deltas are secondary to reliability; compare them only after the same task/model/config has enough valid repetitions.',
@@ -255,6 +274,8 @@ if (hasFlag('--record')) {
     provider: preflight?.actualProvider ?? null,
     model: preflight?.actualModel ?? null,
     pairedDiscoveryRetention: primaryRetention,
+    targetActivationRate: deferredActivationRate,
+    postActivationUseRate,
     deferredDiscoveryRate,
     negativeControlLoaderAvoidance: negativeLoaderAvoidance,
     reportedTokenDeltaPct: tokenDeltaPct,
