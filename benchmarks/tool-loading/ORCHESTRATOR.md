@@ -9,7 +9,7 @@ Compare two otherwise-identical Pi configurations:
 - **Baseline:** native-equivalent Pi tool exposure. Every registered tool is active except `search_tools`.
 - **Deferred:** only `read`, `bash`, `edit`, `write`, and `search_tools` start active. Specialist tools must be discovered and activated on demand.
 
-The primary question is:
+Primary question:
 
 > When baseline Pi naturally uses the intended specialist tool, how often does deferred Pi still discover and use it?
 
@@ -17,6 +17,7 @@ Do not change task prompts between arms.
 
 ## Ground rules
 
+- The installed `pi-token-burden` must be the implementation being evaluated. If local source changed but Pi still loads an older installed copy, update/install the intended version before benchmarking.
 - Use the same model, thinking level, cwd, installed extensions, context files, and task prompt for both arms.
 - Every case is a fresh `--no-session` Pi run.
 - The benchmark uses process-local environment overrides; do not edit the user's Pi settings.
@@ -39,11 +40,16 @@ If the user specified a model/thinking level, pin them:
 node benchmarks/tool-loading/scripts/probe.mjs --model <model> --thinking <level>
 ```
 
-The command prints a run directory. Save it as `RUN_DIR`.
+The command prints a run directory. Save it as `RUN_DIR` and read `RUN_DIR/preflight.json`.
 
-Read `RUN_DIR/preflight.json`.
+Stop if `ok` is false. The benchmark is invalid unless preflight proves:
 
-Stop if `ok` is false. This means the installed Pi/token-burden combination is not actually producing the expected baseline/deferred active-tool sets. Report the failed invariant instead of running a misleading benchmark.
+- both arms expose the same registered tool catalog
+- baseline has every non-loader tool active
+- deferred has only core tools + `search_tools` active
+- both arms used the same provider/model
+
+If preflight shows that the environment overrides have no effect, the installed `pi-token-burden` is probably not the version under test. Fix that first rather than running a misleading benchmark.
 
 Use only `runnableTasks`. Missing optional specialist tools are normal and must be reported as skipped.
 
@@ -93,9 +99,9 @@ This creates:
 
 - `RUN_DIR/metrics.json` - machine-readable metrics
 - `RUN_DIR/comparison.md` - human-readable comparison
-- `benchmarks/tool-loading/results/history.jsonl` - one durable summary row for trend comparison
+- `benchmarks/tool-loading/results/history.jsonl` - compact longitudinal history
 
-Raw traces and per-case JSON are intentionally gitignored; the compact result artifacts are suitable for keeping over time.
+Raw traces and per-case JSON are intentionally gitignored; compact result artifacts are suitable for keeping over time.
 
 ## 5. Spawn one analysis subagent
 
@@ -106,19 +112,25 @@ Give the analysis subagent only:
 - `RUN_DIR/comparison.md`
 - `benchmarks/tool-loading/results/history.jsonl` if it exists
 
-Ask it to check for obvious anomalies and compare this run with previous recorded runs. It may inspect raw traces only for anomalous tasks.
+Ask it to check for anomalies and compare this run with previous recorded runs. It may inspect raw traces only for anomalous tasks.
 
-It must not invent a composite score. The main reliability number is `pairedDiscoveryRetention`.
+Do not invent a composite score. The main reliability number is `pairedDiscoveryRetention`.
+
+Use the diagnostics to explain failures:
+
+- low `targetActivationRate` = `search_tools` failed to resolve the right tool
+- high activation but low `postActivationUseRate` = the model received the tool but did not use it
 
 ## 6. Final response
 
 Return a compact report with exactly these points:
 
 - **Reliability:** paired discovery retention.
-- **Discovery:** deferred discovery success rate.
+- **Resolution:** target activation rate.
+- **Use after load:** post-activation use rate.
 - **Discipline:** negative-control loader avoidance.
 - **Cost:** reported token delta and latency delta.
-- **Problems:** weak probes, skipped tools, failed cases, or regressions versus history.
+- **Problems:** weak probes, skipped tools, failed cases, model mismatch, or regression versus comparable history.
 - **Artifacts:** the run directory and `comparison.md` path.
 
 Interpretation:
@@ -126,4 +138,5 @@ Interpretation:
 - Near-100% paired discovery retention means deferred loading preserved specialist-tool selection when baseline wanted that tool.
 - A weak probe means baseline itself rarely used the target tool; do not blame deferred loading for that task.
 - Negative controls should almost never call `search_tools`.
+- Compare historical runs only when model/Pi version/task-suite/config metadata are compatible.
 - Token/latency savings matter only after reliability is acceptable.
