@@ -52,6 +52,35 @@ The table is sorted by token count (descending). Use arrow keys to navigate,
 Enter to drill down into children (e.g., individual skills or context files),
 and `/` to fuzzy-search items.
 
+### Deferred tool loading
+
+This fork can keep specialist tool schemas out of the initial model context and load them only when needed.
+
+By default, a new session starts with only these tools active:
+
+- `read`
+- `bash`
+- `edit`
+- `write`
+- `search_tools`
+
+Every other registered tool stays deferred. When the model needs another capability it calls `search_tools`, which searches inactive tools by name/description and activates matching tools additively with Pi's `setActiveTools()` API. Pi can then use its provider-native deferred-tool protocol where supported.
+
+Run `/token-burden tools` to choose which tools should always be active, or disable deferred loading entirely. Saving applies the choice immediately and persists it in `~/.pi/agent/settings.json` under:
+
+```json
+{
+  "pi-token-burden": {
+    "deferredTools": {
+      "enabled": true,
+      "alwaysActive": ["bash", "edit", "read", "write"]
+    }
+  }
+}
+```
+
+Newly installed specialist tools default to deferred unless you add them to the always-active set.
+
 **Drill-down views:**
 
 <p align="center">
@@ -158,4 +187,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
-[MIT](LICENSE)
+MIT
