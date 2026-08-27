@@ -6,6 +6,7 @@
     ".gcc/**",
     ".napkin/**",
     ".pi-subagents/**",
+    "benchmarks/tool-loading/**",
     "docs/**",
     "dist/**",
     "CHANGELOG.md",
