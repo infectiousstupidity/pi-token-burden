@@ -126,6 +126,80 @@ function normalizeText(value: string): string {
   return value.toLowerCase().replaceAll(/[^a-z0-9]+/g, ' ').trim();
 }
 
+function sanitizeMcpServerPrefix(serverName: string): string {
+  const validCharacter = /^[A-Za-z0-9_-]$/;
+  return Array.from(serverName, (character) =>
+    validCharacter.test(character)
+      ? character
+      : `_${character.codePointAt(0)?.toString(16) ?? '0'}_`,
+  ).join('');
+}
+
+function mcpToolNameCandidates(serverName: string, toolName: string): string[] {
+  const serverPrefix = sanitizeMcpServerPrefix(serverName);
+  const shortPrefix =
+    sanitizeMcpServerPrefix(serverName.replace(/-?mcp$/i, '')) || 'mcp';
+  const sanitizedToolName = toolName.replaceAll('.', '_');
+
+  return [
+    `${serverPrefix}_${sanitizedToolName}`,
+    `mcp__${serverPrefix}_${sanitizedToolName}`,
+    `${shortPrefix}_${sanitizedToolName}`,
+    sanitizedToolName,
+  ];
+}
+
+export function resolveMcpDirectTools(
+  availableToolNames: Iterable<string>,
+  rawSelectors = process.env.MCP_DIRECT_TOOLS,
+): string[] {
+  if (!rawSelectors || rawSelectors === '__none__') {
+    return [];
+  }
+
+  const available = [...availableToolNames];
+  const availableSet = new Set(available);
+  const selected = new Set<string>();
+
+  for (const rawSelector of rawSelectors.split(',')) {
+    const selector = rawSelector.trim().replace(/\/+$/, '');
+    if (!selector) {
+      continue;
+    }
+
+    if (selector.includes('/')) {
+      const [serverName, toolName] = selector.split('/', 2);
+      if (!serverName || !toolName) {
+        continue;
+      }
+
+      for (const candidate of mcpToolNameCandidates(serverName, toolName)) {
+        if (availableSet.has(candidate)) {
+          selected.add(candidate);
+        }
+      }
+      continue;
+    }
+
+    const serverPrefix = sanitizeMcpServerPrefix(selector);
+    const shortPrefix =
+      sanitizeMcpServerPrefix(selector.replace(/-?mcp$/i, '')) || 'mcp';
+    const prefixes = [
+      `${serverPrefix}_`,
+      `mcp__${serverPrefix}_`,
+      `${shortPrefix}_`,
+    ];
+
+    for (const toolName of available) {
+      if (prefixes.some((prefix) => toolName.startsWith(prefix))) {
+        selected.add(toolName);
+      }
+    }
+  }
+
+  return [...selected];
+}
+
 function rankTool(tool: ToolLike, query: string): number {
   const normalizedQuery = normalizeText(query);
   if (!normalizedQuery) {
@@ -181,6 +255,7 @@ export function applyDeferredToolDefaults(
   const active = [
     TOOL_SEARCH_NAME,
     ...settings.alwaysActive.filter((name) => availableSet.has(name)),
+    ...resolveMcpDirectTools(available),
   ];
   const uniqueActive = [...new Set(active)].filter((name) => availableSet.has(name));
   pi.setActiveTools(uniqueActive);
