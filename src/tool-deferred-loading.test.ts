@@ -63,10 +63,23 @@ const tools: TestTool[] = [
   { name: TOOL_SEARCH_NAME, description: 'Search deferred tools', parameters: {} },
   { name: 'lens_diagnostics', description: 'TypeScript diagnostics and compiler errors', parameters: {} },
   { name: 'web_search', description: 'Search the web', parameters: {} },
+  { name: 'shiori_get_task', description: 'Get the bound Shiori task', parameters: {} },
+  { name: 'shiori_submit_review', description: 'Submit a Shiori review', parameters: {} },
 ];
 
 describe('deferred tool loading', () => {
+  const originalMcpDirectTools = process.env.MCP_DIRECT_TOOLS;
+
+  afterEach(() => {
+    if (originalMcpDirectTools === undefined) {
+      delete process.env.MCP_DIRECT_TOOLS;
+    } else {
+      process.env.MCP_DIRECT_TOOLS = originalMcpDirectTools;
+    }
+  });
+
   it('starts with core tools plus the loader only', () => {
+    delete process.env.MCP_DIRECT_TOOLS;
     const { pi, active } = createPi(tools, tools.map((tool) => tool.name));
 
     applyDeferredToolDefaults(pi, {
@@ -75,6 +88,28 @@ describe('deferred tool loading', () => {
     });
 
     expect(active).toEqual([TOOL_SEARCH_NAME, 'read', 'bash', 'edit', 'write']);
+  });
+
+  it('preserves runtime-required MCP direct tools while deferring unrelated tools', () => {
+    process.env.MCP_DIRECT_TOOLS = 'shiori/get_task,shiori/submit_review';
+    const { pi, active } = createPi(tools, tools.map((tool) => tool.name));
+
+    applyDeferredToolDefaults(pi, {
+      enabled: true,
+      alwaysActive: ['read', 'bash', 'edit', 'write'],
+    });
+
+    expect(active).toEqual([
+      TOOL_SEARCH_NAME,
+      'read',
+      'bash',
+      'edit',
+      'write',
+      'shiori_get_task',
+      'shiori_submit_review',
+    ]);
+    expect(active).not.toContain('web_search');
+    expect(active).not.toContain('lens_diagnostics');
   });
 
   it('activates matching tools additively when searched', async () => {
