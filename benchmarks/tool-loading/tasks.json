@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "diagnostics",
+      "kind": "positive",
+      "targetTools": ["lens_diagnostics"],
+      "optional": true,
+      "prompt": "Check this repository for TypeScript diagnostics using the most appropriate available capability. Report whether errors exist and name the first affected file if any. Do not modify files and do not manually run the compiler if a dedicated diagnostics capability is available."
+    },
+    {
+      "id": "symbol-navigation",
+      "kind": "positive",
+      "targetTools": ["symbol_search"],
+      "optional": true,
+      "prompt": "Find where applyDeferredToolDefaults is defined and locate its references using the most appropriate code-navigation capability. Return only the definition path and reference paths. Do not modify files."
+    },
+    {
+      "id": "module-report",
+      "kind": "positive",
+      "targetTools": ["module_report"],
+      "optional": true,
+      "prompt": "Produce a concise structural report for the src module using the most appropriate repository-analysis capability. Include its main responsibilities and the three most central files. Do not modify files."
+    },
+    {
+      "id": "project-report",
+      "kind": "positive",
+      "targetTools": ["project_report"],
+      "optional": true,
+      "prompt": "Produce a concise high-level architecture report for this repository using the most appropriate project-analysis capability. Include the main subsystems and how they fit together. Do not modify files."
+    },
+    {
+      "id": "web-search",
+      "kind": "positive",
+      "targetTools": ["web_search"],
+      "optional": true,
+      "prompt": "Find the current official Pi documentation page that explains JSON event-stream mode and report the documented command used to start it. Use the most appropriate internet-search capability."
+    },
+    {
+      "id": "fetch-content",
+      "kind": "positive",
+      "targetTools": ["fetch_content"],
+      "optional": true,
+      "prompt": "Retrieve the contents of https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/json.md using the most appropriate direct content-retrieval capability and report its top-level heading."
+    },
+    {
+      "id": "source-check",
+      "kind": "positive",
+      "targetTools": ["source_check"],
+      "optional": true,
+      "prompt": "Verify whether the claim 'Pi JSON mode emits one JSON object per line' is supported by the official Pi source/documentation using the most appropriate source-verification capability. Give only supported or unsupported plus one short reason."
+    },
+    {
+      "id": "mcp-discovery",
+      "kind": "positive",
+      "targetTools": ["mcp"],
+      "optional": true,
+      "prompt": "Inspect the configured external tool integrations and report one available MCP server or capability using the most appropriate integration-discovery capability. Do not modify anything."
+    },
+    {
+      "id": "core-read-control",
+      "kind": "negative",
+      "targetTools": [],
+      "optional": false,
+      "prompt": "Read package.json and report only the package version. Do not use internet access or any specialist analysis capability."
+    },
+    {
+      "id": "core-bash-control",
+      "kind": "negative",
+      "targetTools": [],
+      "optional": false,
+      "prompt": "Run node --version and report only the version string. Do not use any specialist analysis or internet capability."
+    }
+  ]
+}
