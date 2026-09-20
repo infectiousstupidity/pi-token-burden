@@ -79,7 +79,7 @@ Run `/token-burden tools` to choose which tools should always be active, or disa
 }
 ```
 
-Newly installed specialist tools default to deferred unless you add them to the always-active set.
+Newly installed specialist tools default to deferred unless you add them to the always-active set. Tools explicitly selected through `MCP_DIRECT_TOOLS` are treated as runtime-required and remain active without being added to the persistent defaults.
 
 **Drill-down views:**
 
